@@ -4,8 +4,8 @@ use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use burst_communication_middleware::{
-    BurstMiddleware, BurstOptions, Message, MiddlewareActorHandle, RabbitMQMImpl, RabbitMQOptions,
-    TokioChannelImpl, TokioChannelOptions,
+    BurstMiddleware, BurstOptions, Middleware, MiddlewareActorHandle, RabbitMQMImpl,
+    RabbitMQOptions, TokioChannelImpl, TokioChannelOptions,
 };
 
 use bytes::{buf, Bytes};
@@ -13,8 +13,9 @@ use std::io::BufReader;
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
-use rusoto_core::Region;
-use rusoto_s3::{GetObjectRequest, S3Client, S3};
+use aws_credential_types::Credentials;
+use aws_sdk_s3::config::Region;
+use aws_sdk_s3::Client as S3Client;
 
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{Error, Value};
@@ -28,26 +29,26 @@ use std::thread;
 use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
- struct Input {
-     bucket: String,
-     key: String,
-     s3_config: S3Config,
-     threshold: f32,
-     num_dimensions: u32,
-     num_clusters: u32,
-     max_iterations: u32,
+struct Input {
+    bucket: String,
+    key: String,
+    s3_config: S3Config,
+    threshold: f32,
+    num_dimensions: u32,
+    num_clusters: u32,
+    max_iterations: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
- struct S3Config {
-     region: String,
-     endpoint: String,
-     aws_access_key_id: String,
-     aws_secret_access_key: String,
+struct S3Config {
+    region: String,
+    endpoint: String,
+    aws_access_key_id: String,
+    aws_secret_access_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
- struct Output {
+struct Output {
     worker_id: u32,
     correct_centroids: Vec<f32>,
     communication_time: Duration,
@@ -56,35 +57,31 @@ use tokio::io::AsyncReadExt;
 }
 
 async fn get_matrix_from_s3(args: &Input) -> Result<DMatrix<f32>, Box<dyn stdError>> {
-
-    let client = rusoto_core::request::HttpClient::new().unwrap();
-    let region = Region::Custom {
-        name: args.s3_config.region.clone(),
-        endpoint: args.s3_config.endpoint.clone(),
-    };
-    let creds = rusoto_core::credential::StaticProvider::new_minimal(
-        args.s3_config.aws_access_key_id.clone(),
-        args.s3_config.aws_secret_access_key.clone(),
+    let region = Region::new(args.s3_config.region.clone());
+    let creds = Credentials::new(
+        &args.s3_config.aws_access_key_id,
+        &args.s3_config.aws_secret_access_key,
+        None,
+        None,
+        "static",
     );
-    let s3_client = S3Client::new_with(client, creds, region);
+    let config = aws_sdk_s3::config::Builder::new()
+        .region(region)
+        .endpoint_url(args.s3_config.endpoint.clone())
+        .credentials_provider(creds)
+        .force_path_style(true)
+        .build();
+    let s3_client = S3Client::from_conf(config);
 
     let object = s3_client
-        .get_object(GetObjectRequest {
-            bucket: args.bucket.clone(),
-            key: args.key.clone(),
-            ..Default::default()
-        })
+        .get_object()
+        .bucket(args.bucket.clone())
+        .key(args.key.clone())
+        .send()
         .await
         .unwrap();
 
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut reader = object.body.unwrap().into_async_read();
-
-    while let Ok(sz) = reader.read_buf(&mut buffer).await {
-        if sz == 0 {
-            break;
-        }
-    }
+    let buffer = object.body.collect().await.unwrap().into_bytes();
 
     let cursor = Cursor::new(buffer);
 
@@ -200,8 +197,7 @@ fn get_timer() -> Duration {
         .expect("Time went backwards")
 }
 
- fn kmeans_burst(args: Input, burst_middleware: MiddlewareActorHandle) -> Option<Output> {
-
+fn kmeans_burst(args: Input, burst_middleware: MiddlewareActorHandle<Bytes>) -> Option<Output> {
     let start_total = get_timer();
 
     let mut communication: Duration = Default::default();
@@ -267,7 +263,6 @@ fn get_timer() -> Duration {
     //while iter_count < max_iterations && global_delta_val > threshold {
     while iter_count < args.max_iterations {
         // Get Centroids
-        let res: Message;
         if burst_middleware.info.worker_id == 0 {
             let cc_bytes = unsafe {
                 std::slice::from_raw_parts(
@@ -280,27 +275,27 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            res = burst_middleware.broadcast(Some(data)).unwrap();
+            let res = burst_middleware.broadcast(Some(data), 0).unwrap();
 
             let end = get_timer();
 
             communication += end - start;
 
             // Convert bytes to Vec<f32>
-            let data = res.data.as_ref();
+            let data = res.as_ref();
             let len = data.len();
             let ptr = data.as_ptr() as *const f32;
             correct_centroids = unsafe { std::slice::from_raw_parts(ptr, len / 4) }.to_vec();
         } else {
             let start = get_timer();
 
-            res = burst_middleware.broadcast(None).unwrap();
+            let res = burst_middleware.broadcast(None, 0).unwrap();
 
             let end = get_timer();
 
             communication += end - start;
 
-            let data = res.data.as_ref();
+            let data = res.as_ref();
             let len = data.len();
             let ptr = data.as_ptr() as *const f32;
             correct_centroids = unsafe { std::slice::from_raw_parts(ptr, len / 4) }.to_vec();
@@ -327,13 +322,13 @@ fn get_timer() -> Duration {
         );
 
         // Calculate delta
-        let mut res_gather: Vec<Message>;
+        let mut res_gather: Vec<Bytes>;
         if burst_middleware.info.worker_id == 0 {
             let data = Bytes::from(i32::to_le_bytes(delta).to_vec());
 
             let start = get_timer();
 
-            res_gather = burst_middleware.gather(data).unwrap().unwrap();
+            res_gather = burst_middleware.gather(data, 0).unwrap().unwrap();
 
             let end = get_timer();
 
@@ -341,7 +336,7 @@ fn get_timer() -> Duration {
 
             let mut global_delta = 0;
             for message in res_gather {
-                let data = message.data.as_ref();
+                let data = message.as_ref();
                 let len = data.len();
                 let ptr = data.as_ptr() as *const i32;
                 let decoded = *unsafe { std::slice::from_raw_parts(ptr, len / 4) }
@@ -355,7 +350,7 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            res_gather = burst_middleware.gather(data).unwrap().unwrap();
+            res_gather = burst_middleware.gather(data, 0).unwrap().unwrap();
 
             let end = get_timer();
 
@@ -364,7 +359,7 @@ fn get_timer() -> Duration {
             let mut global_points = 0;
 
             for message in res_gather {
-                let data = message.data.as_ref();
+                let data = message.as_ref();
                 let len = data.len();
                 let ptr = data.as_ptr() as *const i32;
                 let decoded = *unsafe { std::slice::from_raw_parts(ptr, len / 4) }
@@ -380,7 +375,7 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            burst_middleware.gather(data).unwrap();
+            burst_middleware.gather(data, 0).unwrap();
 
             let end = get_timer();
 
@@ -390,14 +385,14 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            burst_middleware.gather(data).unwrap();
+            burst_middleware.gather(data, 0).unwrap();
 
             let end = get_timer();
             communication += end - start;
         }
 
         // Update Centroids
-        let mut res_gather: Vec<Message>;
+        let mut res_gather: Vec<Bytes>;
         if burst_middleware.info.worker_id == 0 {
             let lc_bytes = unsafe {
                 std::slice::from_raw_parts(
@@ -410,7 +405,7 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            res_gather = burst_middleware.gather(data).unwrap().unwrap();
+            res_gather = burst_middleware.gather(data, 0).unwrap().unwrap();
 
             let end = get_timer();
 
@@ -421,7 +416,7 @@ fn get_timer() -> Duration {
             let mut all_centroids = vec![0.0; capacity.try_into().unwrap()];
 
             for message in res_gather {
-                let data = message.data.as_ref();
+                let data = message.as_ref();
                 let len = data.len();
                 let ptr = data.as_ptr() as *const f32;
                 all_centroids = unsafe { std::slice::from_raw_parts(ptr, len / 4) }.to_vec();
@@ -458,7 +453,7 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            res_gather = burst_middleware.gather(data).unwrap().unwrap();
+            res_gather = burst_middleware.gather(data, 0).unwrap().unwrap();
 
             let end = get_timer();
 
@@ -468,7 +463,7 @@ fn get_timer() -> Duration {
             let mut all_sizes = vec![0; capacity.try_into().unwrap()];
 
             for message in res_gather {
-                let data = message.data.as_ref();
+                let data = message.as_ref();
                 let len = data.len();
                 let ptr = data.as_ptr() as *const u32;
                 all_sizes = unsafe { std::slice::from_raw_parts(ptr, len / 4) }.to_vec();
@@ -515,7 +510,7 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            burst_middleware.gather(data).unwrap();
+            burst_middleware.gather(data, 0).unwrap();
 
             let end = get_timer();
 
@@ -532,7 +527,7 @@ fn get_timer() -> Duration {
 
             let start = get_timer();
 
-            burst_middleware.gather(data).unwrap();
+            burst_middleware.gather(data, 0).unwrap();
 
             let end = get_timer();
 
@@ -540,19 +535,19 @@ fn get_timer() -> Duration {
         }
 
         // Update global delta val
-        let res: Message;
+        let res: Bytes;
         if burst_middleware.info.worker_id == 0 {
             let data = Bytes::from(f32::to_le_bytes(global_delta_val.try_into().unwrap()).to_vec());
 
             let start = get_timer();
 
-            res = burst_middleware.broadcast(Some(data)).unwrap();
+            res = burst_middleware.broadcast(Some(data), 0).unwrap();
 
             let end = get_timer();
 
             communication += end - start;
 
-            let data = res.data.as_ref();
+            let data = res.as_ref();
             let len = data.len();
             let ptr = data.as_ptr() as *const f32;
             global_delta_val = *unsafe { std::slice::from_raw_parts(ptr, len / 4) }
@@ -562,13 +557,13 @@ fn get_timer() -> Duration {
         } else {
             let start = get_timer();
 
-            res = burst_middleware.broadcast(None).unwrap();
+            res = burst_middleware.broadcast(None, 0).unwrap();
 
             let end = get_timer();
 
             communication += end - start;
 
-            let data = res.data.as_ref();
+            let data = res.as_ref();
             let len = data.len();
             let ptr = data.as_ptr() as *const f32;
             global_delta_val = *unsafe { std::slice::from_raw_parts(ptr, len / 4) }
@@ -595,19 +590,18 @@ fn get_timer() -> Duration {
             communication_time: communication,
             compute_time: total_time - communication,
             total_time: total_time,
-        })
+        });
     }
 
     None
-
 }
 
 // ow_main would be the entry point of an actual open whisk burst worker
-pub fn main(args: Value, burst_middleware: MiddlewareActorHandle) -> Result<Value, Error> {
+pub fn main(args: Value, burst_middleware: Middleware<Bytes>) -> Result<Value, Error> {
     let input: Input = serde_json::from_value(args)?;
     println!("Starting kmeans: {:?}", input);
 
-    let result = kmeans_burst(input, burst_middleware);
+    let result = kmeans_burst(input, burst_middleware.get_actor_handle());
 
     println!("Done");
     println!("{:?}", result);
@@ -682,14 +676,14 @@ pub fn main(args: Value, burst_middleware: MiddlewareActorHandle) -> Result<Valu
 //            group_ranges,
 //            group_id: group_id.to_string(),
 //            chunking: true,
-            // chunk_size received is in KB
+// chunk_size received is in KB
 //            chunk_size: 1024*1024,
 //            tokio_broadcast_channel_size: Some(1024*1024),
 //        },
 //        &runtime,
 //    ).unwrap();
 
-    // Create threads
+// Create threads
 //    let mut handlers = Vec::new();
 
 //    for id in group_range.into_iter() {
