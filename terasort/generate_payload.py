@@ -23,48 +23,98 @@ DEFAULT_TMP_PREFIX = "tmp/"
 
 AWS_S3_REGION = None
 AWS_S3_ENDPOINT = None
-AWS_ACCESS_KEY_ID = "minioadmin"
-AWS_SECRET_ACCESS_KEY = "minioadmin"
+AWS_ACCESS_KEY_ID = None
+AWS_SECRET_ACCESS_KEY = None
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Sort input payload")
-    parser.add_argument("--partitions", type=int, required=True, help="Number of partitions")
+    parser.add_argument(
+        "--partitions", type=int, required=True, help="Number of partitions"
+    )
     parser.add_argument("--bucket", type=str, required=True, help="Bucket name")
     parser.add_argument("--key", type=str, required=True, help="Object key")
-    parser.add_argument("--sort-output-key", type=str, required=False, help="Sort output key")
+    parser.add_argument(
+        "--sort-output-key", type=str, required=False, help="Sort output key"
+    )
     parser.add_argument("--sort-column", type=int, required=True, help="Sort key")
     parser.add_argument("--delimiter", type=str, default=",", help="Delimiter")
-    parser.add_argument("--start-margin", type=float, default=DEFAULT_START_MARGIN, help="Start margin")
-    parser.add_argument("--end-margin", type=float, default=DEFAULT_END_MARGIN, help="End margin")
-    parser.add_argument("--sample-ratio", type=float, default=DEFAULT_SAMPLE_RATIO, help="Sample ratio")
-    parser.add_argument("--sample-fragments", type=int, default=DEFAULT_SAMPLE_FRAGMENTS, help="Sample fragments")
-    parser.add_argument("--max-sample-size", type=int, default=DEFAULT_MAX_SAMPLE_SIZE, help="Max sample size")
     parser.add_argument(
-        "--bound-margin", type=int, default=DEFUALT_BOUND_EXTRACTION_MARGIN, help="Bound extraction margin"
+        "--start-margin", type=float, default=DEFAULT_START_MARGIN, help="Start margin"
+    )
+    parser.add_argument(
+        "--end-margin", type=float, default=DEFAULT_END_MARGIN, help="End margin"
+    )
+    parser.add_argument(
+        "--sample-ratio", type=float, default=DEFAULT_SAMPLE_RATIO, help="Sample ratio"
+    )
+    parser.add_argument(
+        "--sample-fragments",
+        type=int,
+        default=DEFAULT_SAMPLE_FRAGMENTS,
+        help="Sample fragments",
+    )
+    parser.add_argument(
+        "--max-sample-size",
+        type=int,
+        default=DEFAULT_MAX_SAMPLE_SIZE,
+        help="Max sample size",
+    )
+    parser.add_argument(
+        "--bound-margin",
+        type=int,
+        default=DEFUALT_BOUND_EXTRACTION_MARGIN,
+        help="Bound extraction margin",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
-    parser.add_argument("--payload-filename", type=str, default=DEFAULT_PAYLOAD_FILENAME, help="Payload filename")
-    parser.add_argument("--tmp-prefix", type=str, default=DEFAULT_TMP_PREFIX, help="Prefix for temorary data in S3")
-    parser.add_argument("--s3_region", type=str, default=AWS_S3_REGION, help="S3 region")
-    parser.add_argument("--s3_endpoint", type=str, default=AWS_S3_ENDPOINT, help="S3 endpoint")
-    parser.add_argument("--aws_access_key_id", type=str, default=AWS_ACCESS_KEY_ID, help="AWS access key id")
     parser.add_argument(
-        "--aws_secret_access_key", type=str, default=AWS_SECRET_ACCESS_KEY, help="AWS secret access key"
+        "--payload-filename",
+        type=str,
+        default=DEFAULT_PAYLOAD_FILENAME,
+        help="Payload filename",
     )
-    parser.add_argument("--split", type=int, default=1, help="Split output into multiple files")
+    parser.add_argument(
+        "--tmp-prefix",
+        type=str,
+        default=DEFAULT_TMP_PREFIX,
+        help="Prefix for temorary data in S3",
+    )
+    parser.add_argument(
+        "--s3_region", type=str, default=AWS_S3_REGION, help="S3 region"
+    )
+    parser.add_argument(
+        "--s3_endpoint", type=str, default=AWS_S3_ENDPOINT, help="S3 endpoint"
+    )
+    parser.add_argument(
+        "--aws_access_key_id",
+        type=str,
+        default=AWS_ACCESS_KEY_ID,
+        help="AWS access key id",
+    )
+    parser.add_argument(
+        "--aws_secret_access_key",
+        type=str,
+        default=AWS_SECRET_ACCESS_KEY,
+        help="AWS secret access key",
+    )
+    parser.add_argument(
+        "--split", type=int, default=1, help="Split output into multiple files"
+    )
     args = parser.parse_args()
 
     if args.seed is not None:
         random.seed(args.seed)
 
-    s3_client = boto3.client(
-        "s3",
-        endpoint_url=args.s3_endpoint,
-        region_name=args.s3_region,
-        aws_access_key_id=args.aws_access_key_id,
-        aws_secret_access_key=args.aws_secret_access_key,
-    )
+    # Build S3 client kwargs - only include credentials if explicitly provided
+    s3_kwargs: dict = {
+        "endpoint_url": args.s3_endpoint,
+        "region_name": args.s3_region,
+    }
+    if args.aws_access_key_id and args.aws_secret_access_key:
+        s3_kwargs["aws_access_key_id"] = args.aws_access_key_id
+        s3_kwargs["aws_secret_access_key"] = args.aws_secret_access_key
+
+    s3_client = boto3.client("s3", **s3_kwargs)
     obj_size = s3_client.head_object(Bucket=args.bucket, Key=args.key)["ContentLength"]
 
     # Avoid dataset head and tail
@@ -83,7 +133,9 @@ def main():
 
     # Select bounds randomly
     num_parts = int(choosable_size / fragment_size)
-    selected_fragments = sorted(random.sample(range(num_parts), DEFAULT_SAMPLE_FRAGMENTS))
+    selected_fragments = sorted(
+        random.sample(range(num_parts), DEFAULT_SAMPLE_FRAGMENTS)
+    )
 
     keys_arrays = []
     row_lens = []
@@ -162,7 +214,11 @@ def main():
     segment_bounds = [keys[int(q * len(keys))] for q in quantiles]
 
     # Generate multipart upload
-    output_key = args.sort_output_key if args.sort_output_key is not None else args.key + ".sorted"
+    output_key = (
+        args.sort_output_key
+        if args.sort_output_key is not None
+        else args.key + ".sorted"
+    )
     mpu_res = s3_client.create_multipart_upload(Bucket=args.bucket, Key=output_key)
     # print(mpu_res)
     mpu_id = mpu_res["UploadId"]
@@ -198,8 +254,12 @@ def main():
         assert args.partitions % args.split == 0
         stride = args.partitions // args.split
         for i in range(args.split):
-            with open(args.payload_filename + f"_part-{str(i).zfill(4)}" + ".json", "w") as f:
-                f.write(json.dumps(params[stride * i : (stride * i) + stride], indent=4))
+            with open(
+                args.payload_filename + f"_part-{str(i).zfill(4)}" + ".json", "w"
+            ) as f:
+                f.write(
+                    json.dumps(params[stride * i : (stride * i) + stride], indent=4)
+                )
     else:
         with open(f"{args.payload_filename}.json", "w") as f:
             json.dump(params, f, indent=4)
