@@ -8,14 +8,14 @@ use burst_communication_middleware::{
     RabbitMQOptions, TokioChannelImpl, TokioChannelOptions,
 };
 
-use bytes::{buf, Bytes};
+use bytes::{Bytes, buf};
 use std::io::BufReader;
 
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use aws_credential_types::Credentials;
-use aws_sdk_s3::config::Region;
 use aws_sdk_s3::Client as S3Client;
+use aws_sdk_s3::config::Region;
 
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{Error, Value};
