@@ -1,6 +1,8 @@
-# Parallel BSP Breadth-First Search
+# Parallel BSP Breadth-First Search (OpenWhisk Emulation)
 
 This is a Rust application that computes the Breadth-First Search (BFS) distances on a grid graph using a fully parallelized **Bulk Synchronous Parallel (BSP)** approach. The program uses the internal `@burst-communication-middleware` to distribute messages and establish the iteration boundaries via network collective operations.
+
+This version is structured to mimic an OpenWhisk Serverless execution environment, decoupling the core logic (`src/lib.rs`) from the local testing wrapper (`src/main.rs`).
 
 ## Requirements
 
@@ -31,43 +33,40 @@ cargo build --release
 
 ## Execution & Parameters
 
-The application exposes a robust CLI for dynamic configuration and benchmarking using `clap`.
+The application exposes a CLI for dynamic configuration simulating the middleware layout and graph generation parameters.
 
 ```bash
 cargo run --release -- --help
 ```
 
 Available arguments:
-- `-t, --threads <THREADS>`: Sets the number of worker threads to spawn (default: 4).
+- `-b, --burst-id <BURST_ID>`: Identifier for the burst execution (default: "bfs").
+- `-B, --burst-size <BURST_SIZE>`: Total number of workers globally (default: 4).
+- `-g, --group-id <GROUP_ID>`: ID of the local group executing on this node (default: 0).
+- `-G, --granularity <GRANULARITY>`: Number of workers per group/node (default: 4).
+- `--redis-url <REDIS_URL>`: Connection string for Redis (default: "redis://127.0.0.1").
+- `-e, --enable-chunking`: Flag to enable message chunking in the middleware.
+- `-m, --message-chunk-size <SIZE>`: Size of chunks in bytes (default: 1048576).
 - `-r, --rows <ROWS>`: Sets the number of rows of the generated synthetic grid graph (default: 100).
 - `-c, --cols <COLS>`: Sets the number of columns of the generated synthetic grid graph (default: 100).
-- `-i, --iterations <ITERATIONS>`: Sets the number of consecutive runs to execute for accurate benchmarking (default: 5).
+- `-s, --source <SOURCE>`: ID of the source node for the BFS traversal (default: 0).
 
 ### Execution Example
 
-Run a benchmark on a 500x500 grid using 2 threads, repeated 3 times:
+Run a test simulating 4 workers in a single group (granularity = 4), over a 500x500 grid:
 
 ```bash
-cargo run --release -- -t 2 -r 500 -c 500 -i 3
+cargo run --release -- -B 4 -G 4 -r 500 -c 500
 ```
 
-**Output format:**
+**Expected Console Output:**
 
 ```text
-Building synthetic grid graph (500 x 500 = 250000 nodes)...
-Running Parallel BSP BFS with 2 threads for 3 iterations...
-  Iteration 1: 6391.38 ms
-  Iteration 2: 6195.36 ms
-  Iteration 3: 6555.01 ms
-
---- Benchmark Results ---
-Total Runs:  3
-Mean Time:   6380.58 ms
-Std Dev:     180.07 ms
-Min Time:    6195.36 ms
-Max Time:    6555.01 ms
--------------------------
+num_groups: 1
+Execution completed in 491.68 ms
 ```
+
+The execution will also generate an `output_bfs_group-0.json` file in the same directory, containing a serialized array of the results and precise step-by-step timestamps for each worker. This structure directly mimics the JSON responses that would be returned by an action to the OpenWhisk controller.
 
 ## Cleanup
 
