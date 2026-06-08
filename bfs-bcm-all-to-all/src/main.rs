@@ -1,4 +1,4 @@
-use bfs_paralellized::{main as ow_main, Input, BfsMessage};
+use bfs_bcm_all_to_all::{main as ow_main, Input, BfsMessage};
 use burst_communication_middleware::{
     BurstMiddleware, BurstOptions, Middleware, RedisListImpl, RedisListOptions, TokioChannelImpl,
     TokioChannelOptions,
