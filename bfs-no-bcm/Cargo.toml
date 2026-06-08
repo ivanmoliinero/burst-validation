@@ -1,0 +1,11 @@
+[package]
+name = "bfs-no-bcm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+crossbeam = "0.8.4"
+crossbeam-channel = "0.5.15"
+env_logger = "0.11.10"
+log = "0.4.32"
