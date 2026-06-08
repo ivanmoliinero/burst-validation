@@ -13,35 +13,35 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "bfs")]
+    #[arg(short = 'i', long, default_value = "bfs")]
     burst_id: String,
 
-    #[arg(short, long, default_value_t = 4)]
+    #[arg(short = 'b', long, default_value_t = 4)]
     burst_size: u32,
 
-    #[arg(short, long, default_value_t = 0)]
+    #[arg(short = 'g', long, default_value_t = 0)]
     group_id: u32,
 
-    #[arg(short, long, default_value_t = 4)]
+    #[arg(short = 'G', long, default_value_t = 4)]
     granularity: u32,
 
     #[arg(long, default_value = "redis://127.0.0.1")]
     redis_url: String,
 
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short = 'e', long, default_value_t = false)]
     enable_chunking: bool,
 
-    #[arg(short, long, default_value_t = 1048576)]
+    #[arg(short = 'm', long, default_value_t = 1048576)]
     message_chunk_size: usize,
 
     // Specific to our Graph execution
-    #[arg(short, long, default_value_t = 100)]
+    #[arg(short = 'r', long, default_value_t = 100)]
     rows: usize,
 
-    #[arg(short, long, default_value_t = 100)]
+    #[arg(short = 'c', long, default_value_t = 100)]
     cols: usize,
 
-    #[arg(short, long, default_value_t = 0)]
+    #[arg(short = 's', long, default_value_t = 0)]
     source: usize,
 }
 
@@ -61,6 +61,7 @@ fn main() {
 
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_name("tokio-worker")
         .build()
         .unwrap();
 

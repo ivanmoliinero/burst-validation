@@ -40,8 +40,8 @@ cargo run --release -- --help
 ```
 
 Available arguments:
-- `-b, --burst-id <BURST_ID>`: Identifier for the burst execution (default: "bfs").
-- `-B, --burst-size <BURST_SIZE>`: Total number of workers globally (default: 4).
+- `-i, --burst-id <BURST_ID>`: Identifier for the burst execution (default: "bfs").
+- `-b, --burst-size <BURST_SIZE>`: Total number of workers globally (default: 4).
 - `-g, --group-id <GROUP_ID>`: ID of the local group executing on this node (default: 0).
 - `-G, --granularity <GRANULARITY>`: Number of workers per group/node (default: 4).
 - `--redis-url <REDIS_URL>`: Connection string for Redis (default: "redis://127.0.0.1").
@@ -56,7 +56,7 @@ Available arguments:
 Run a test simulating 4 workers in a single group (granularity = 4), over a 500x500 grid:
 
 ```bash
-cargo run --release -- -B 4 -G 4 -r 500 -c 500
+cargo run --release -- -b 4 -G 4 -r 500 -c 500
 ```
 
 **Expected Console Output:**
