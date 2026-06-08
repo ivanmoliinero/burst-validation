@@ -66,39 +66,38 @@ impl Graph {
 }
 
 #[derive(Clone, Debug)]
-pub enum BfsMessage {
-    Node(usize),
-    Flush,
-    WorkStatus(u32),
-}
+pub struct BfsMessage(pub Vec<usize>);
 
 impl From<Bytes> for BfsMessage {
     fn from(bytes: Bytes) -> Self {
-        if bytes.len() == 1 && bytes[0] == 0xFF {
-            return BfsMessage::Flush;
-        } else if bytes.len() == 5 && bytes[0] == 0xFE {
-            let work = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-            return BfsMessage::WorkStatus(work);
-        }
-        let node = usize::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]);
-        BfsMessage::Node(node)
+        let mut vecu8 = bytes.to_vec();
+        let vec_usize = unsafe {
+            let ratio = std::mem::size_of::<usize>() / std::mem::size_of::<u8>();
+            let length = vecu8.len() / ratio;
+            let capacity = vecu8.capacity() / ratio;
+            let ptr = vecu8.as_mut_ptr() as *mut usize;
+
+            std::mem::forget(vecu8);
+
+            Vec::from_raw_parts(ptr, length, capacity)
+        };
+        BfsMessage(vec_usize)
     }
 }
 
 impl From<BfsMessage> for Bytes {
-    fn from(msg: BfsMessage) -> Self {
-        match msg {
-            BfsMessage::Node(node) => Bytes::copy_from_slice(&node.to_be_bytes()),
-            BfsMessage::Flush => Bytes::from_static(&[0xFF]),
-            BfsMessage::WorkStatus(work) => {
-                let mut bytes = Vec::with_capacity(5);
-                bytes.push(0xFE);
-                bytes.extend_from_slice(&work.to_be_bytes());
-                Bytes::from(bytes)
-            }
-        }
+    fn from(mut val: BfsMessage) -> Self {
+        let vec8 = unsafe {
+            let ratio = std::mem::size_of::<usize>() / std::mem::size_of::<u8>();
+            let length = val.0.len() * ratio;
+            let capacity = val.0.capacity() * ratio;
+            let ptr = val.0.as_mut_ptr() as *mut u8;
+
+            std::mem::forget(val.0);
+
+            Vec::from_raw_parts(ptr, length, capacity)
+        };
+        Bytes::from(vec8)
     }
 }
 
@@ -126,103 +125,67 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
 
     loop {
         // ---------------------------------------------------------
-        // Phase 1: Compute & Send
+        // Phase 1: Local Compute
         // ---------------------------------------------------------
         for &u in &current_frontier {
             for &v in &graph.adj[u] {
-                let owner = (v as u32) % num_threads;
-                if owner == worker_id {
+                // If it's owned by us, process it immediately
+                if (v as u32) % num_threads == worker_id {
                     if distances[v].load(Ordering::Relaxed) == usize::MAX {
                         distances[v].store(current_level + 1, Ordering::Relaxed);
                         next_frontier.push(v);
                     }
                 } else {
-                    actor.send(owner, BfsMessage::Node(v)).unwrap();
+                    // Otherwise, add to the external frontier to be reduced
+                    next_frontier.push(v);
                 }
             }
         }
         current_frontier.clear();
-
-        // Send Flush token to all other workers to mark end of sending
-        for other in 0..num_threads {
-            if other != worker_id {
-                actor.send(other, BfsMessage::Flush).unwrap();
-            }
-        }
+        timestamps.push(timestamp(format!("iter_{}_compute", current_level)));
 
         // ---------------------------------------------------------
-        // Phase 2: Receive until we get Flush from all other workers
+        // Phase 2: Reduce Local Frontiers into Global Frontier
         // ---------------------------------------------------------
-        let mut flushes_received = 0;
-        while flushes_received < num_threads - 1 {
-            for other in 0..num_threads {
-                if other == worker_id {
-                    continue;
-                }
-
-                loop {
-                    let msg = actor.recv(other).unwrap();
-                    match msg {
-                        BfsMessage::Node(v) => {
-                            if distances[v].load(Ordering::Relaxed) == usize::MAX {
-                                distances[v].store(current_level + 1, Ordering::Relaxed);
-                                next_frontier.push(v);
-                            }
-                        }
-                        BfsMessage::Flush => {
-                            flushes_received += 1;
-                            break; // Go to next worker
-                        }
-                        _ => panic!("Unexpected message type during Phase 2"),
-                    }
-                }
-            }
-        }
-
-        timestamps.push(timestamp(format!("iter_{}_sync", current_level)));
-
-        // ---------------------------------------------------------
-        // Phase 3: Termination Check via Middleware Reduce
-        // ---------------------------------------------------------
-        let has_work = if next_frontier.is_empty() { 0 } else { 1 };
-
-        let reduced_status_opt = actor
-            .reduce(BfsMessage::WorkStatus(has_work), |a, b| {
-                if let (BfsMessage::WorkStatus(wa), BfsMessage::WorkStatus(wb)) = (a, b) {
-                    BfsMessage::WorkStatus(wa + wb)
-                } else {
-                    panic!("Reduce operation received invalid message types");
-                }
+        let global_frontier_msg = actor
+            .reduce(BfsMessage(next_frontier.clone()), |mut vec1, vec2| {
+                vec1.0.extend(vec2.0);
+                vec1
             })
             .unwrap();
+        timestamps.push(timestamp(format!("iter_{}_reduce", current_level)));
 
-        // `reduce` returns Some on the root worker (worker 0 usually, based on tree reduction logic)
-        let should_terminate;
-        if worker_id == ROOT_WORKER {
-            let final_status = reduced_status_opt.unwrap();
-            if let BfsMessage::WorkStatus(work) = final_status {
-                should_terminate = work == 0;
-                let signal = BfsMessage::WorkStatus(if should_terminate { 0 } else { 1 });
-                actor.broadcast(Some(signal), ROOT_WORKER).unwrap();
-            } else {
-                panic!("Invalid reduce output");
-            }
+        // ---------------------------------------------------------
+        // Phase 3: Root Evaluates & Broadcasts Global Frontier
+        // ---------------------------------------------------------
+        let global_frontier = if worker_id == ROOT_WORKER {
+            let combined = global_frontier_msg.unwrap().0;
+            // The root worker broadcasts the combined global frontier
+            let bcast_msg = BfsMessage(combined);
+            actor.broadcast(Some(bcast_msg.clone()), ROOT_WORKER).unwrap();
+            bcast_msg.0
         } else {
-            let bcast = actor.broadcast(None, ROOT_WORKER).unwrap();
-            if let BfsMessage::WorkStatus(work) = bcast {
-                should_terminate = work == 0;
-            } else {
-                panic!("Invalid broadcast output");
-            }
-        }
+            actor.broadcast(None, ROOT_WORKER).unwrap().0
+        };
+        timestamps.push(timestamp(format!("iter_{}_broadcast", current_level)));
 
-        timestamps.push(timestamp(format!("iter_{}_end", current_level)));
-
-        if should_terminate {
+        if global_frontier.is_empty() {
             break;
         }
 
-        std::mem::swap(&mut current_frontier, &mut next_frontier);
+        // ---------------------------------------------------------
+        // Phase 4: Assign External Nodes from Global Frontier
+        // ---------------------------------------------------------
+        next_frontier.clear();
+        for &v in &global_frontier {
+            if (v as u32) % num_threads == worker_id {
+                if distances[v].load(Ordering::Relaxed) == usize::MAX {
+                    distances[v].store(current_level + 1, Ordering::Relaxed);
+                    current_frontier.push(v);
+                }
+            }
+        }
+
         current_level += 1;
     }
 

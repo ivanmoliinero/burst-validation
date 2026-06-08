@@ -122,7 +122,7 @@ fn run_bfs_iteration(
                                 if distances[v].load(Ordering::Relaxed) == usize::MAX {
                                     distances[v].store(current_level + 1, Ordering::Relaxed);
                                     next_frontier.push(v);
-                                }
+                                } // else, already visited
                             } else {
                                 senders[owner as usize]
                                     .send(BfsMessage::Node(v))
