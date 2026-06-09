@@ -107,25 +107,29 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
     let graph: &Graph = unsafe { &*(params.graph_ptr as *const Graph) };
     let num_nodes = graph.num_nodes();
 
+    let local_distances_size = (num_nodes / num_threads as usize) + 1;
     let mut local_distances_out = Vec::new();
-    let mut distances: Vec<AtomicUsize> = (0..num_nodes).map(|_| AtomicUsize::new(usize::MAX)).collect();
+    let mut distances: Vec<usize> = vec![usize::MAX; local_distances_size];
 
     for (trial, &source) in params.sources.iter().enumerate() {
         timestamps.push(timestamp(format!("trial_{}_start", trial)));
 
         // Reset distances
-        for d in &distances {
-            d.store(usize::MAX, Ordering::Relaxed);
+        for d in &mut distances {
+            *d = usize::MAX;
         }
-        distances[source].store(0, Ordering::Relaxed);
 
         let mut current_frontier: Vec<usize> = Vec::new();
         let mut next_frontier: Vec<usize> = Vec::new();
         let mut current_level = 0;
 
         if source as u32 % num_threads == worker_id {
+            let local_source = source / num_threads as usize;
+            distances[local_source] = 0;
             current_frontier.push(source);
         }
+
+        let mut iter_start = SystemTime::now();
 
         loop {
             // Phase 1: Local Compute & Prepare Chunks
@@ -135,8 +139,9 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
             for &u in &current_frontier {
                 for &v in graph.get_neighbors(u) {
                     if (v as u32) % num_threads == worker_id {
-                        if distances[v].load(Ordering::Relaxed) == usize::MAX {
-                            distances[v].store(current_level + 1, Ordering::Relaxed);
+                        let local_v = v / num_threads as usize;
+                        if distances[local_v] == usize::MAX {
+                            distances[local_v] = current_level + 1;
                             next_frontier.push(v);
                             local_discoveries += 1;
                         }
@@ -166,21 +171,35 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
 
             // Phase 3: Consensus & Assign External Nodes
             let mut any_worker_had_work = false;
+            let mut incoming_nodes_for_root = 0;
 
             for msg in recv_messages {
                 if msg.has_work > 0 {
                     any_worker_had_work = true;
                 }
                 
+                if worker_id == 0 {
+                    incoming_nodes_for_root += msg.nodes.len();
+                }
+
                 for &v in &msg.nodes {
-                    if distances[v].load(Ordering::Relaxed) == usize::MAX {
-                        distances[v].store(current_level + 1, Ordering::Relaxed);
+                    let local_v = v / num_threads as usize;
+                    if distances[local_v] == usize::MAX {
+                        distances[local_v] = current_level + 1;
                         next_frontier.push(v);
                     }
                 }
             }
             
             timestamps.push(timestamp(format!("trial_{}_iter_{}_process", trial, current_level)));
+
+            if worker_id == 0 {
+                if let Ok(elapsed) = iter_start.elapsed() {
+                    println!("[Monitor] Trial {} | Iter {} | Sync passed in {:.3}ms | Worker 0 rx: {} nodes", 
+                        trial, current_level, elapsed.as_secs_f64() * 1000.0, incoming_nodes_for_root);
+                }
+                iter_start = SystemTime::now();
+            }
 
             if !any_worker_had_work {
                 break;
@@ -194,11 +213,11 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
 
         // Extract local distances for validation (only for trial 0 to save memory)
         if trial == 0 {
-            for (node, dist_atomic) in distances.iter().enumerate() {
-                if (node as u32) % num_threads == worker_id {
-                    let d = dist_atomic.load(Ordering::Relaxed);
-                    if d != usize::MAX {
-                        local_distances_out.push((node, d));
+            for (local_node, &d) in distances.iter().enumerate() {
+                if d != usize::MAX {
+                    let global_node = local_node * (num_threads as usize) + (worker_id as usize);
+                    if global_node < num_nodes {
+                        local_distances_out.push((global_node, d));
                     }
                 }
             }
