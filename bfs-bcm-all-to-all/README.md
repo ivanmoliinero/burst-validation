@@ -69,8 +69,7 @@ Available arguments:
 - `-t, --trials <TRIALS>`: Number of BFS trials to execute (default: 64).
 - `--seed <SEED>`: Seed used to select the random source nodes for the trials (default: 27491095).
 - `-f, --graph-file <FILE>`: Path to a graph file (.el or .sg) to load instead of generating a grid.
-- `-C, --comm-mode <MODE>`: Communication strategy pattern to use. Available options are `all-to-all` or `broadcast-reduce` (default: `all-to-all`).
-
+- `-C, --comm-mode <MODE>`: Communication strategy pattern to use. Available options are `all-to-all`, `broadcast-reduce` or `scatter-reduce` (default: `all-to-all`). **Note:** `broadcast-reduce` strictly requires the remote backend to be running even for single-group executions. To evaluate broadcast behavior without Redis, use the `scatter-reduce` strategy instead.
 ### Execution Example
 
 Run a test simulating 4 workers in a single group (granularity = 4), over a 500x500 grid:
