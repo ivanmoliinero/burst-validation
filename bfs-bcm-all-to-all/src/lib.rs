@@ -17,6 +17,8 @@ pub struct Input {
     pub num_threads: u32,
     pub sources: Vec<usize>,
     pub graph_ptr: usize,
+    pub graph_load_start: String,
+    pub graph_generated: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,7 +97,8 @@ impl From<BfsMessage> for Bytes {
 
 fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
     let mut timestamps = Vec::new();
-    timestamps.push(timestamp("worker_start".to_string()));
+    timestamps.push(Timestamp { key: "worker_start".to_string(), value: params.graph_load_start });
+    timestamps.push(Timestamp { key: "graph_generated".to_string(), value: params.graph_generated });
 
     let worker_id = actor.info.worker_id;
     let num_threads = params.num_threads;

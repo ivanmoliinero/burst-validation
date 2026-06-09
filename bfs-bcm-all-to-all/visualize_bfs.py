@@ -58,10 +58,9 @@ def generate_charts(json_file):
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    df_global.plot(kind='bar', stacked=True, ax=ax1, colormap='Set2')
-    ax1.set_ylabel('Tiempo (ms)')
+    df_global.plot(kind='barh', stacked=True, ax=ax1, colormap='Set2')
+    ax1.set_xlabel('Tiempo (ms)')
     ax1.set_title('Desglose de Tiempo por Worker')
-    ax1.tick_params(axis='x', rotation=0)
     
     # Plot 2: Average times per iteration across all trials
     avg_compute = np.mean(compute_times) if compute_times else 0

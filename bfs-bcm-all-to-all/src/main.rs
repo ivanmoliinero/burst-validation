@@ -123,6 +123,9 @@ fn main() {
     let mut actors_vec = actors.into_iter().collect::<Vec<_>>();
     actors_vec.sort_by(|(a, _), (b, _)| a.cmp(b));
 
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let start_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
+
     // Load graph once in the main thread
     let graph = if let Some(ref path) = args.graph_file {
         println!("Loading graph from file: {}", path);
@@ -131,6 +134,8 @@ fn main() {
         println!("Generating grid graph {}x{}", args.rows, args.cols);
         Graph::new_grid(args.rows, args.cols)
     };
+
+    let end_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
 
     println!("Graph generated/loaded! Starting workers creation...");
     
@@ -158,6 +163,8 @@ fn main() {
             num_threads: args.burst_size,
             sources: sources.clone(),
             graph_ptr,
+            graph_load_start: start_load.clone(),
+            graph_generated: end_load.clone(),
         }).unwrap());
     }
 
