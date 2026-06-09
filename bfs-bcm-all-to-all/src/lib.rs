@@ -52,12 +52,13 @@ pub struct BfsMessage {
 
 impl From<Bytes> for BfsMessage {
     fn from(bytes: Bytes) -> Self {
-        let has_work = if bytes.len() >= std::mem::size_of::<usize>() {
-            let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const usize, 1) };
-            slice[0] as u32
-        } else {
-            0
-        };
+        let mut has_work = 0;
+        
+        if bytes.len() >= std::mem::size_of::<usize>() {
+            let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const usize, bytes.len() / std::mem::size_of::<usize>()) };
+            has_work = slice[slice.len() - 1] as u32;
+        }
+        
         BfsMessage { has_work, nodes: bytes }
     }
 }
@@ -105,9 +106,11 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
         let mut iter_start = SystemTime::now();
 
         loop {
-            // Phase 1: Local Compute & Prepare Chunks (index 0 is reserved for has_work)
-            let mut out_chunks = vec![vec![0usize]; num_threads as usize];
+            // Phase 1: Local Compute & Prepare Chunks
+            let mut out_chunks = vec![Vec::new(); num_threads as usize];
             let mut local_discoveries = 0;
+            // Allocate blocks of 64 bits to store messages to send via bit implementation.
+            let mut sent_bitvec = vec![0u64; (num_nodes / 64) + 1];
 
             for &u in &current_frontier {
                 for &v in graph.get_neighbors(u) {
@@ -119,9 +122,14 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
                             local_discoveries += 1;
                         }
                     } else {
-                        let owner = (v as u32) % num_threads;
-                        out_chunks[owner as usize].push(v);
-                        local_discoveries += 1;
+                        let word_idx = v / 64;
+                        let mask = 1u64 << (v % 64);
+                        if (sent_bitvec[word_idx] & mask) == 0 {
+                            sent_bitvec[word_idx] |= mask;
+                            let owner = (v as u32) % num_threads;
+                            out_chunks[owner as usize].push(v);
+                            local_discoveries += 1;
+                        }
                     }
                 }
             }
@@ -133,7 +141,8 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
             let send_messages = out_chunks
                 .into_iter()
                 .map(|mut chunk| {
-                    chunk[0] = has_work as usize;
+                    chunk.push(has_work as usize);
+                    chunk.shrink_to_fit();
                     
                     let vec8 = unsafe {
                         let length = chunk.len() * std::mem::size_of::<usize>();
@@ -163,14 +172,18 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
                     any_worker_had_work = true;
                 }
                 
-                let nodes_slice = unsafe {
+                let payload_with_work = unsafe {
                     std::slice::from_raw_parts(
                         msg.nodes.as_ptr() as *const usize,
                         msg.nodes.len() / std::mem::size_of::<usize>()
                     )
                 };
-
-                let payload = if nodes_slice.len() > 1 { &nodes_slice[1..] } else { &[] };
+                
+                let payload = if payload_with_work.len() > 0 {
+                    &payload_with_work[0..payload_with_work.len() - 1]
+                } else {
+                    &[]
+                };
 
                 if worker_id == 0 {
                     incoming_nodes_for_root += payload.len();
