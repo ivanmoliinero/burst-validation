@@ -52,12 +52,17 @@ impl Graph {
     pub fn from_sg_file<P: AsRef<Path>>(path: P) -> Self {
         let mut file = File::open(path).expect("Failed to open .sg file");
         
-        let mut u64_buf = [0u8; 8];
-        file.read_exact(&mut u64_buf).expect("Failed to read num_nodes");
-        let num_nodes = u64_le(&u64_buf) as usize;
+        let mut bool_buf = [0u8; 1];
+        file.read_exact(&mut bool_buf).expect("Failed to read directed flag");
+        let _directed = bool_buf[0] != 0;
 
+        let mut u64_buf = [0u8; 8];
+        
         file.read_exact(&mut u64_buf).expect("Failed to read num_edges");
         let _num_edges = u64_le(&u64_buf) as usize;
+
+        file.read_exact(&mut u64_buf).expect("Failed to read num_nodes");
+        let num_nodes = u64_le(&u64_buf) as usize;
 
         let mut offsets = vec![0usize; num_nodes + 1];
         for i in 0..=num_nodes {
