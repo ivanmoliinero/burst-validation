@@ -197,7 +197,13 @@ fn main() {
     let elapsed_ms = elapsed_par.as_secs_f64() * 1000.0;
     println!("Execution completed in {:.2} ms", elapsed_ms);
 
+    // Free the massive graph memory before generating the JSON output
+    drop(graph);
+    println!("Graph memory freed.");
+
+    use std::io::BufWriter;
     let output_filename = format!("output_{}_group-{}.json", args.burst_id, args.group_id);
     let output_file = std::fs::File::create(output_filename).unwrap();
-    serde_json::to_writer(output_file, &results).unwrap();
+    let writer = BufWriter::with_capacity(8 * 1024 * 1024, output_file);
+    serde_json::to_writer(writer, &results).unwrap();
 }
