@@ -19,17 +19,22 @@ def generate_charts(json_file):
         
         ts_dict = {ts['key']: int(ts['value']) for ts in worker_data.get('timestamps', [])}
         
-        # 1. Global Processing Times (Average over trials)
+        # 1. Global Processing Times
         graph_gen_time = 0
         if 'graph_generated' in ts_dict and 'worker_start' in ts_dict:
             graph_gen_time = ts_dict['graph_generated'] - ts_dict['worker_start']
             
-        trial_proc_times = []
+        record = {
+            'worker': worker_name,
+            'Carga del Grafo': graph_gen_time,
+        }
+
         trials = sorted(list(set([int(re.search(r'trial_(\d+)', k).group(1)) for k in ts_dict.keys() if 'trial_' in k])))
         
-        for t in trials:
+        for idx, t in enumerate(trials):
             if f"trial_{t}_start" in ts_dict and f"trial_{t}_end" in ts_dict:
-                trial_proc_times.append(ts_dict[f"trial_{t}_end"] - ts_dict[f"trial_{t}_start"])
+                time_taken = ts_dict[f"trial_{t}_end"] - ts_dict[f"trial_{t}_start"]
+                record[f'Trial {idx}'] = time_taken
             
             # 2. Extract Phase 1 and Communication times per iteration for each trial
             iters = sorted(list(set([int(re.search(r'_iter_(\d+)_', k).group(1)) for k in ts_dict.keys() if f"trial_{t}_iter_" in k])))
@@ -45,22 +50,32 @@ def generate_charts(json_file):
                 if k_alltoall in ts_dict and k_compute in ts_dict:
                     comm_times.append(ts_dict[k_alltoall] - ts_dict[k_compute])
 
-        avg_proc_time = np.mean(trial_proc_times) if trial_proc_times else 0
-
-        records_global.append({
-            'worker': worker_name,
-            'Carga del Grafo': graph_gen_time,
-            'Procesado Promedio (x Trial)': avg_proc_time
-        })
+        records_global.append(record)
 
     # Plot 1: Worker Execution Times
     df_global = pd.DataFrame(records_global).set_index('worker')
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    # Ensure correct column order
+    trial_cols = sorted([c for c in df_global.columns if c.startswith('Trial ')])
+    columns_ordered = ['Carga del Grafo'] + trial_cols
+    df_global = df_global[columns_ordered]
     
-    df_global.plot(kind='barh', stacked=True, ax=ax1, colormap='Set2')
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # Alternating colors: Gray for Load, then alternating Blues and Oranges for Trials
+    colors = ['#888888']
+    for i in range(len(trial_cols)):
+        colors.append('#4C72B0' if i % 2 == 0 else '#DD8452')
+        
+    df_global.plot(kind='barh', stacked=True, ax=ax1, color=colors, legend=False)
     ax1.set_xlabel('Tiempo (ms)')
-    ax1.set_title('Desglose de Tiempo por Worker')
+    ax1.set_title('Desglose de Tiempo por Worker (Trials Apilados)')
+    
+    import matplotlib.patches as mpatches
+    gray_patch = mpatches.Patch(color='#888888', label='Carga del Grafo')
+    blue_patch = mpatches.Patch(color='#4C72B0', label='Trials (Pares)')
+    orange_patch = mpatches.Patch(color='#DD8452', label='Trials (Impares)')
+    ax1.legend(handles=[gray_patch, blue_patch, orange_patch], loc='best')
     
     # Plot 2: Average times per iteration across all trials
     avg_compute = np.mean(compute_times) if compute_times else 0

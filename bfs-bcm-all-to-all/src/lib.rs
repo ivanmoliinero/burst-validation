@@ -47,58 +47,31 @@ fn timestamp(key: String) -> Timestamp {
 #[derive(Clone, Debug)]
 pub struct BfsMessage {
     pub has_work: u32,
-    pub nodes: Vec<usize>,
+    pub nodes: Bytes,
 }
 
 impl From<Bytes> for BfsMessage {
-    fn from(mut bytes: Bytes) -> Self {
-        let has_work_bytes = bytes.split_to(4);
-        let has_work = u32::from_be_bytes([
-            has_work_bytes[0],
-            has_work_bytes[1],
-            has_work_bytes[2],
-            has_work_bytes[3],
-        ]);
-
-        let mut vecu8 = bytes.to_vec();
-        let vec_usize = unsafe {
-            let ratio = std::mem::size_of::<usize>() / std::mem::size_of::<u8>();
-            let length = vecu8.len() / ratio;
-            let capacity = vecu8.capacity() / ratio;
-            let ptr = vecu8.as_mut_ptr() as *mut usize;
-
-            std::mem::forget(vecu8);
-
-            Vec::from_raw_parts(ptr, length, capacity)
+    fn from(bytes: Bytes) -> Self {
+        let has_work = if bytes.len() >= std::mem::size_of::<usize>() {
+            let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const usize, 1) };
+            slice[0] as u32
+        } else {
+            0
         };
-        BfsMessage { has_work, nodes: vec_usize }
+        BfsMessage { has_work, nodes: bytes }
     }
 }
 
 impl From<BfsMessage> for Bytes {
-    fn from(mut val: BfsMessage) -> Self {
-        let vec8 = unsafe {
-            let ratio = std::mem::size_of::<usize>() / std::mem::size_of::<u8>();
-            let length = val.nodes.len() * ratio;
-            let capacity = val.nodes.capacity() * ratio;
-            let ptr = val.nodes.as_mut_ptr() as *mut u8;
-
-            std::mem::forget(val.nodes);
-
-            Vec::from_raw_parts(ptr, length, capacity)
-        };
-
-        let mut final_bytes = Vec::with_capacity(4 + vec8.len());
-        final_bytes.extend_from_slice(&val.has_work.to_be_bytes());
-        final_bytes.extend_from_slice(&vec8);
-        Bytes::from(final_bytes)
+    fn from(val: BfsMessage) -> Self {
+        val.nodes
     }
 }
 
 fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
     let mut timestamps = Vec::new();
-    timestamps.push(Timestamp { key: "worker_start".to_string(), value: params.graph_load_start });
-    timestamps.push(Timestamp { key: "graph_generated".to_string(), value: params.graph_generated });
+    timestamps.push(Timestamp { key: "worker_start".to_string(), value: params.graph_load_start.clone() });
+    timestamps.push(Timestamp { key: "graph_generated".to_string(), value: params.graph_generated.clone() });
 
     let worker_id = actor.info.worker_id;
     let num_threads = params.num_threads;
@@ -132,8 +105,8 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
         let mut iter_start = SystemTime::now();
 
         loop {
-            // Phase 1: Local Compute & Prepare Chunks
-            let mut out_chunks = vec![Vec::new(); num_threads as usize];
+            // Phase 1: Local Compute & Prepare Chunks (index 0 is reserved for has_work)
+            let mut out_chunks = vec![vec![0usize]; num_threads as usize];
             let mut local_discoveries = 0;
 
             for &u in &current_frontier {
@@ -159,9 +132,21 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
 
             let send_messages = out_chunks
                 .into_iter()
-                .map(|chunk| BfsMessage {
-                    has_work,
-                    nodes: chunk,
+                .map(|mut chunk| {
+                    chunk[0] = has_work as usize;
+                    
+                    let vec8 = unsafe {
+                        let length = chunk.len() * std::mem::size_of::<usize>();
+                        let capacity = chunk.capacity() * std::mem::size_of::<usize>();
+                        let ptr = chunk.as_mut_ptr() as *mut u8;
+                        std::mem::forget(chunk);
+                        Vec::from_raw_parts(ptr, length, capacity)
+                    };
+
+                    BfsMessage {
+                        has_work,
+                        nodes: Bytes::from(vec8),
+                    }
                 })
                 .collect::<Vec<_>>();
 
@@ -178,11 +163,20 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
                     any_worker_had_work = true;
                 }
                 
+                let nodes_slice = unsafe {
+                    std::slice::from_raw_parts(
+                        msg.nodes.as_ptr() as *const usize,
+                        msg.nodes.len() / std::mem::size_of::<usize>()
+                    )
+                };
+
+                let payload = if nodes_slice.len() > 1 { &nodes_slice[1..] } else { &[] };
+
                 if worker_id == 0 {
-                    incoming_nodes_for_root += msg.nodes.len();
+                    incoming_nodes_for_root += payload.len();
                 }
 
-                for &v in &msg.nodes {
+                for &v in payload {
                     let local_v = v / num_threads as usize;
                     if distances[local_v] == usize::MAX {
                         distances[local_v] = current_level + 1;
