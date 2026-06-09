@@ -128,7 +128,7 @@ make road.sg
 Once you have the `.sg` files, simply supply the file path to our binary. Thanks to memory-sharing pointers, the graph will only be loaded into RAM once, even if you spawn hundreds of threaded workers locally:
 
 ```bash
-cargo run --release --bin bfs-bcm-all-to-all -- -b 4 -G 4 -t 64 -f /path/to/kron27.sg
+cargo run --release --bin bfs-bcm-all-to-all -- -b 4 -G 4 -t 64 -f /path/to/kron27.sg -C all-to-all
 ```
 
 ## Cleanup
