@@ -49,6 +49,9 @@ struct Args {
 
     #[arg(short = 'f', long)]
     graph_file: Option<String>,
+
+    #[arg(short = 'C', long = "comm-mode", default_value = "all-to-all")]
+    comm_mode: String,
 }
 
 fn main() {
@@ -165,6 +168,7 @@ fn main() {
             graph_ptr,
             graph_load_start: start_load.clone(),
             graph_generated: end_load.clone(),
+            comm_mode: args.comm_mode.clone(),
         }).unwrap());
     }
 

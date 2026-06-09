@@ -7,7 +7,24 @@ This version is structured to mimic an OpenWhisk Serverless execution environmen
 ## Requirements
 
 - **Rust / Cargo**: You need Rust and Cargo installed to compile the application.
-- **Docker & Docker-Compose**: The Burst Middleware forces a remote backend verification on startup. For testing locally, this application comes pre-configured with a Redis dependency. You must have a Redis instance running locally (easily provided via the `docker-compose.yml` file included).
+- **Docker & Docker-Compose (Optional)**: The Burst Middleware uses Redis for cross-node communication. If you are simulating a distributed cluster locally across multiple groups (e.g., `burst-size > granularity`), you must have a Redis instance running. For purely local, single-node multi-threading (where `burst-size == granularity`), **Docker and Redis are NOT required**.
+```rust 
+#[async_trait]
+impl RemoteSendProxy for RedisListSendProxy {
+    async fn remote_send(&self, dest: u32, msg: RemoteMessage) -> Result<()> {
+        let con = self.redis_pool.get().await?; // HERE IT WILL FAIL IN CASE A REMOTE MESSAGE IS NEEDED!!!
+        Ok(send_direct(
+            con,
+            msg,
+            self.worker_id,
+            dest,
+            &self.redis_options,
+            &self.burst_options,
+        )
+        .await?)
+    }
+}
+```
 
 ## Setup
 
@@ -17,7 +34,7 @@ First, navigate to the `bfs-paralellized` directory (this folder):
 cd bfs-paralellized
 ```
 
-Launch the required Redis instance in the background using docker-compose:
+*(Optional)* Launch the required Redis instance in the background using docker-compose only if you plan to do multi-group distributed testing:
 
 ```bash
 docker-compose up -d
@@ -52,6 +69,7 @@ Available arguments:
 - `-t, --trials <TRIALS>`: Number of BFS trials to execute (default: 64).
 - `--seed <SEED>`: Seed used to select the random source nodes for the trials (default: 27491095).
 - `-f, --graph-file <FILE>`: Path to a graph file (.el or .sg) to load instead of generating a grid.
+- `-C, --comm-mode <MODE>`: Communication strategy pattern to use. Available options are `all-to-all` or `broadcast-reduce` (default: `all-to-all`).
 
 ### Execution Example
 
@@ -96,8 +114,8 @@ make
 ```
 
 Use the compiled `converter` tool to generate synthetic datasets:
-- **Kronecker Graph (scale 27)**: `./converter -g 27 -o kron27.sg`
-- **Uniform Random Graph (scale 27, avg degree 16)**: `./converter -u 27 -k 16 -o urand27.sg`
+- **Kronecker Graph (scale 27)**: `./converter -g 27 -b kron27.sg`
+- **Uniform Random Graph (scale 27, avg degree 16)**: `./converter -u 27 -k 16 -b urand27.sg`
 
 Alternatively, the GAPBS Makefile provides targets to automatically download and serialize real-world standard graphs (Warning: These require several gigabytes of storage and bandwidth):
 ```bash
