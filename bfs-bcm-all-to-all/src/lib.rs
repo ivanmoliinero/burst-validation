@@ -13,12 +13,14 @@ pub struct Input {
     pub cols: usize,
     pub num_threads: u32,
     pub source: usize,
+    pub graph_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Output {
     pub worker_id: u32,
     pub timestamps: Vec<Timestamp>,
+    pub local_distances: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,6 +63,40 @@ impl Graph {
                 }
             }
         }
+        Graph { adj }
+    }
+
+    pub fn from_file(path: &str) -> Self {
+        use std::fs::File;
+        use std::io::{BufRead, BufReader};
+
+        let file = File::open(path).expect("Failed to open graph file");
+        let reader = BufReader::new(file);
+
+        let mut edges = Vec::new();
+        let mut max_node = 0;
+
+        for line in reader.lines() {
+            let line = line.unwrap();
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let u: usize = parts[0].parse().unwrap();
+                let v: usize = parts[1].parse().unwrap();
+                edges.push((u, v));
+                if u > max_node { max_node = u; }
+                if v > max_node { max_node = v; }
+            }
+        }
+
+        let num_nodes = max_node + 1;
+        let mut adj = vec![vec![]; num_nodes];
+        for (u, v) in edges {
+            adj[u].push(v);
+        }
+
         Graph { adj }
     }
 }
@@ -122,9 +158,16 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
 
     let worker_id = actor.info.worker_id;
     let num_threads = params.num_threads;
-    let num_nodes = params.rows * params.cols;
 
-    let graph = Graph::new_grid(params.rows, params.cols);
+    let graph = if let Some(ref path) = params.graph_file {
+        log::info!("Worker {} loading graph from file: {}", worker_id, path);
+        Graph::from_file(path)
+    } else {
+        log::info!("Worker {} generating grid graph {}x{}", worker_id, params.rows, params.cols);
+        Graph::new_grid(params.rows, params.cols)
+    };
+    let num_nodes = graph.adj.len();
+
     timestamps.push(timestamp("graph_generated".to_string()));
 
     let distances: Vec<AtomicUsize> = (0..num_nodes).map(|_| AtomicUsize::new(usize::MAX)).collect();
@@ -210,9 +253,22 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
     }
 
     timestamps.push(timestamp("worker_end".to_string()));
+    
+    // Extract local distances for validation
+    let mut local_distances = Vec::new();
+    for (node, dist_atomic) in distances.into_iter().enumerate() {
+        if (node as u32) % num_threads == worker_id {
+            let d = dist_atomic.load(Ordering::Relaxed);
+            if d != usize::MAX {
+                local_distances.push((node, d));
+            }
+        }
+    }
+
     Output {
         worker_id,
         timestamps,
+        local_distances,
     }
 }
 

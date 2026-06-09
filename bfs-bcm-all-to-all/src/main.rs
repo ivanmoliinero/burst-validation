@@ -43,6 +43,9 @@ struct Args {
 
     #[arg(short = 's', long, default_value_t = 0)]
     source: usize,
+
+    #[arg(short = 'f', long)]
+    graph_file: Option<String>,
 }
 
 fn main() {
@@ -126,6 +129,7 @@ fn main() {
             cols: args.cols,
             num_threads: args.burst_size,
             source: args.source,
+            graph_file: args.graph_file.clone(),
         }).unwrap());
     }
 
