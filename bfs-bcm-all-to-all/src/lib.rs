@@ -5,6 +5,9 @@ use serde_json::{Error, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod gapbs_parser;
+pub use gapbs_parser::Graph;
+
 const ROOT_WORKER: u32 = 0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -12,8 +15,8 @@ pub struct Input {
     pub rows: usize,
     pub cols: usize,
     pub num_threads: u32,
-    pub source: usize,
-    pub graph_file: Option<String>,
+    pub sources: Vec<usize>,
+    pub graph_ptr: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,68 +39,6 @@ fn timestamp(key: String) -> Timestamp {
     Timestamp {
         key,
         value: milliseconds_timestamp.to_string(),
-    }
-}
-
-pub struct Graph {
-    pub adj: Vec<Vec<usize>>,
-}
-
-impl Graph {
-    pub fn new_grid(rows: usize, cols: usize) -> Self {
-        let mut adj = vec![vec![]; rows * cols];
-        for r in 0..rows {
-            for c in 0..cols {
-                let u = r * cols + c;
-                if r > 0 {
-                    adj[u].push((r - 1) * cols + c);
-                }
-                if r < rows - 1 {
-                    adj[u].push((r + 1) * cols + c);
-                }
-                if c > 0 {
-                    adj[u].push(r * cols + c - 1);
-                }
-                if c < cols - 1 {
-                    adj[u].push(r * cols + c + 1);
-                }
-            }
-        }
-        Graph { adj }
-    }
-
-    pub fn from_file(path: &str) -> Self {
-        use std::fs::File;
-        use std::io::{BufRead, BufReader};
-
-        let file = File::open(path).expect("Failed to open graph file");
-        let reader = BufReader::new(file);
-
-        let mut edges = Vec::new();
-        let mut max_node = 0;
-
-        for line in reader.lines() {
-            let line = line.unwrap();
-            if line.starts_with('#') || line.trim().is_empty() {
-                continue;
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let u: usize = parts[0].parse().unwrap();
-                let v: usize = parts[1].parse().unwrap();
-                edges.push((u, v));
-                if u > max_node { max_node = u; }
-                if v > max_node { max_node = v; }
-            }
-        }
-
-        let num_nodes = max_node + 1;
-        let mut adj = vec![vec![]; num_nodes];
-        for (u, v) in edges {
-            adj[u].push(v);
-        }
-
-        Graph { adj }
     }
 }
 
@@ -159,116 +100,114 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
     let worker_id = actor.info.worker_id;
     let num_threads = params.num_threads;
 
-    let graph = if let Some(ref path) = params.graph_file {
-        log::info!("Worker {} loading graph from file: {}", worker_id, path);
-        Graph::from_file(path)
-    } else {
-        log::info!("Worker {} generating grid graph {}x{}", worker_id, params.rows, params.cols);
-        Graph::new_grid(params.rows, params.cols)
-    };
+    // Safety: we assume graph_ptr is a valid pointer to an immutable Graph allocated in main.rs
+    let graph: &Graph = unsafe { &*(params.graph_ptr as *const Graph) };
     let num_nodes = graph.adj.len();
 
-    timestamps.push(timestamp("graph_generated".to_string()));
+    let mut local_distances_out = Vec::new();
+    let mut distances: Vec<AtomicUsize> = (0..num_nodes).map(|_| AtomicUsize::new(usize::MAX)).collect();
 
-    let distances: Vec<AtomicUsize> = (0..num_nodes).map(|_| AtomicUsize::new(usize::MAX)).collect();
-    distances[params.source].store(0, Ordering::Relaxed);
+    for (trial, &source) in params.sources.iter().enumerate() {
+        timestamps.push(timestamp(format!("trial_{}_start", trial)));
 
-    let mut current_frontier: Vec<usize> = Vec::new();
-    let mut next_frontier: Vec<usize> = Vec::new();
-    let mut current_level = 0;
+        // Reset distances
+        for d in &distances {
+            d.store(usize::MAX, Ordering::Relaxed);
+        }
+        distances[source].store(0, Ordering::Relaxed);
 
-    if params.source as u32 % num_threads == worker_id {
-        current_frontier.push(params.source);
-    }
+        let mut current_frontier: Vec<usize> = Vec::new();
+        let mut next_frontier: Vec<usize> = Vec::new();
+        let mut current_level = 0;
 
-    loop {
-        // ---------------------------------------------------------
-        // Phase 1: Local Compute & Prepare Chunks
-        // ---------------------------------------------------------
-        let mut out_chunks = vec![Vec::new(); num_threads as usize];
-        let mut local_discoveries = 0;
+        if source as u32 % num_threads == worker_id {
+            current_frontier.push(source);
+        }
 
-        for &u in &current_frontier {
-            for &v in &graph.adj[u] {
-                // If it's owned by us, process it immediately
-                if (v as u32) % num_threads == worker_id {
+        loop {
+            // Phase 1: Local Compute & Prepare Chunks
+            let mut out_chunks = vec![Vec::new(); num_threads as usize];
+            let mut local_discoveries = 0;
+
+            for &u in &current_frontier {
+                for &v in &graph.adj[u] {
+                    if (v as u32) % num_threads == worker_id {
+                        if distances[v].load(Ordering::Relaxed) == usize::MAX {
+                            distances[v].store(current_level + 1, Ordering::Relaxed);
+                            next_frontier.push(v);
+                            local_discoveries += 1;
+                        }
+                    } else {
+                        let owner = (v as u32) % num_threads;
+                        out_chunks[owner as usize].push(v);
+                        local_discoveries += 1;
+                    }
+                }
+            }
+            current_frontier.clear();
+            timestamps.push(timestamp(format!("trial_{}_iter_{}_compute", trial, current_level)));
+
+            let has_work = if local_discoveries > 0 { 1 } else { 0 };
+
+            let send_messages = out_chunks
+                .into_iter()
+                .map(|chunk| BfsMessage {
+                    has_work,
+                    nodes: chunk,
+                })
+                .collect::<Vec<_>>();
+
+            // Phase 2: All-to-All Exchange
+            let recv_messages = actor.all_to_all(send_messages).unwrap();
+            timestamps.push(timestamp(format!("trial_{}_iter_{}_alltoall", trial, current_level)));
+
+            // Phase 3: Consensus & Assign External Nodes
+            let mut any_worker_had_work = false;
+
+            for msg in recv_messages {
+                if msg.has_work > 0 {
+                    any_worker_had_work = true;
+                }
+                
+                for &v in &msg.nodes {
                     if distances[v].load(Ordering::Relaxed) == usize::MAX {
                         distances[v].store(current_level + 1, Ordering::Relaxed);
                         next_frontier.push(v);
-                        local_discoveries += 1;
                     }
-                } else {
-                    // Otherwise, route it to the specific worker
-                    let owner = (v as u32) % num_threads;
-                    out_chunks[owner as usize].push(v);
-                    local_discoveries += 1;
                 }
-            }
-        }
-        current_frontier.clear();
-        timestamps.push(timestamp(format!("iter_{}_compute", current_level)));
-
-        let has_work = if local_discoveries > 0 { 1 } else { 0 };
-
-        let send_messages = out_chunks
-            .into_iter()
-            .map(|chunk| BfsMessage {
-                has_work,
-                nodes: chunk,
-            })
-            .collect::<Vec<_>>();
-
-        // ---------------------------------------------------------
-        // Phase 2: All-to-All Exchange
-        // ---------------------------------------------------------
-        let recv_messages = actor.all_to_all(send_messages).unwrap();
-        timestamps.push(timestamp(format!("iter_{}_alltoall", current_level)));
-
-        // ---------------------------------------------------------
-        // Phase 3: Consensus & Assign External Nodes
-        // ---------------------------------------------------------
-        let mut any_worker_had_work = false;
-
-        for msg in recv_messages {
-            if msg.has_work > 0 {
-                any_worker_had_work = true;
             }
             
-            for &v in &msg.nodes {
-                if distances[v].load(Ordering::Relaxed) == usize::MAX {
-                    distances[v].store(current_level + 1, Ordering::Relaxed);
-                    next_frontier.push(v);
+            timestamps.push(timestamp(format!("trial_{}_iter_{}_process", trial, current_level)));
+
+            if !any_worker_had_work {
+                break;
+            }
+
+            std::mem::swap(&mut current_frontier, &mut next_frontier);
+            current_level += 1;
+        }
+
+        timestamps.push(timestamp(format!("trial_{}_end", trial)));
+
+        // Extract local distances for validation (only for trial 0 to save memory)
+        if trial == 0 {
+            for (node, dist_atomic) in distances.iter().enumerate() {
+                if (node as u32) % num_threads == worker_id {
+                    let d = dist_atomic.load(Ordering::Relaxed);
+                    if d != usize::MAX {
+                        local_distances_out.push((node, d));
+                    }
                 }
             }
         }
-        
-        timestamps.push(timestamp(format!("iter_{}_process", current_level)));
-
-        if !any_worker_had_work {
-            break;
-        }
-
-        std::mem::swap(&mut current_frontier, &mut next_frontier);
-        current_level += 1;
     }
 
     timestamps.push(timestamp("worker_end".to_string()));
-    
-    // Extract local distances for validation
-    let mut local_distances = Vec::new();
-    for (node, dist_atomic) in distances.into_iter().enumerate() {
-        if (node as u32) % num_threads == worker_id {
-            let d = dist_atomic.load(Ordering::Relaxed);
-            if d != usize::MAX {
-                local_distances.push((node, d));
-            }
-        }
-    }
 
     Output {
         worker_id,
         timestamps,
-        local_distances,
+        local_distances: local_distances_out,
     }
 }
 

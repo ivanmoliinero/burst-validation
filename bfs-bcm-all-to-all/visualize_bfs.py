@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import sys
+import re
 
 def generate_charts(json_file):
     with open(json_file, 'r') as f:
@@ -18,35 +19,39 @@ def generate_charts(json_file):
         
         ts_dict = {ts['key']: int(ts['value']) for ts in worker_data.get('timestamps', [])}
         
-        # 1. Global Processing Times
+        # 1. Global Processing Times (Average over trials)
         graph_gen_time = 0
-        total_proc_time = 0
-        
         if 'graph_generated' in ts_dict and 'worker_start' in ts_dict:
             graph_gen_time = ts_dict['graph_generated'] - ts_dict['worker_start']
             
-        if 'worker_end' in ts_dict and 'graph_generated' in ts_dict:
-            total_proc_time = ts_dict['worker_end'] - ts_dict['graph_generated']
+        trial_proc_times = []
+        trials = sorted(list(set([int(re.search(r'trial_(\d+)', k).group(1)) for k in ts_dict.keys() if 'trial_' in k])))
+        
+        for t in trials:
+            if f"trial_{t}_start" in ts_dict and f"trial_{t}_end" in ts_dict:
+                trial_proc_times.append(ts_dict[f"trial_{t}_end"] - ts_dict[f"trial_{t}_start"])
             
+            # 2. Extract Phase 1 and Communication times per iteration for each trial
+            iters = sorted(list(set([int(re.search(r'_iter_(\d+)_', k).group(1)) for k in ts_dict.keys() if f"trial_{t}_iter_" in k])))
+            
+            for it in iters:
+                k_compute = f"trial_{t}_iter_{it}_compute"
+                k_alltoall = f"trial_{t}_iter_{it}_alltoall"
+                k_process_prev = f"trial_{t}_iter_{it-1}_process" if it > 0 else f"trial_{t}_start"
+                
+                if k_compute in ts_dict and k_process_prev in ts_dict:
+                    compute_times.append(ts_dict[k_compute] - ts_dict[k_process_prev])
+                    
+                if k_alltoall in ts_dict and k_compute in ts_dict:
+                    comm_times.append(ts_dict[k_alltoall] - ts_dict[k_compute])
+
+        avg_proc_time = np.mean(trial_proc_times) if trial_proc_times else 0
+
         records_global.append({
             'worker': worker_name,
             'Carga del Grafo': graph_gen_time,
-            'Procesado del Grafo': total_proc_time
+            'Procesado Promedio (x Trial)': avg_proc_time
         })
-        
-        # 2. Extract Phase 1 and Communication times per iteration
-        iters = sorted(list(set([int(k.split('_')[1]) for k in ts_dict.keys() if k.startswith('iter_')])))
-        
-        for it in iters:
-            k_compute = f"iter_{it}_compute"
-            k_alltoall = f"iter_{it}_alltoall"
-            k_process_prev = f"iter_{it-1}_process" if it > 0 else "graph_generated"
-            
-            if k_compute in ts_dict and k_process_prev in ts_dict:
-                compute_times.append(ts_dict[k_compute] - ts_dict[k_process_prev])
-                
-            if k_alltoall in ts_dict and k_compute in ts_dict:
-                comm_times.append(ts_dict[k_alltoall] - ts_dict[k_compute])
 
     # Plot 1: Worker Execution Times
     df_global = pd.DataFrame(records_global).set_index('worker')
@@ -58,13 +63,13 @@ def generate_charts(json_file):
     ax1.set_title('Desglose de Tiempo por Worker')
     ax1.tick_params(axis='x', rotation=0)
     
-    # Plot 2: Average times
+    # Plot 2: Average times per iteration across all trials
     avg_compute = np.mean(compute_times) if compute_times else 0
     avg_comm = np.mean(comm_times) if comm_times else 0
     
     ax2.bar(['Cómputo Local (Fase 1)', 'Comunicación (All-to-All)'], [avg_compute, avg_comm], color=['#4C72B0', '#DD8452'])
     ax2.set_ylabel('Tiempo Medio (ms)')
-    ax2.set_title('Promedios por Iteración')
+    ax2.set_title('Promedios por Iteración (Todos los Trials)')
     
     for i, v in enumerate([avg_compute, avg_comm]):
         ax2.text(i, v + (v*0.01), f"{v:.2f} ms", ha='center', fontweight='bold')

@@ -12,8 +12,8 @@ struct Args {
     #[arg(short = 'j', long)]
     json_result: String,
 
-    #[arg(short = 's', long, default_value_t = 0)]
-    source: usize,
+    #[arg(long, default_value_t = 27491095)]
+    seed: u64,
 }
 
 // Sequential implementation that validates the output (i.e. the distances at which each node is
@@ -46,8 +46,20 @@ fn main() {
     let num_nodes = graph.adj.len();
     println!("Graph loaded: {} nodes.", num_nodes);
 
-    println!("Running Sequential Ground Truth BFS from source {}...", args.source);
-    let expected_distances = sequential_bfs(&graph, args.source);
+    use rand::{Rng, SeedableRng};
+    use rand::rngs::StdRng;
+    let mut rng = StdRng::seed_from_u64(args.seed);
+    let mut source = 0;
+    loop {
+        let u = (rng.next_u64() as usize) % num_nodes;
+        if !graph.adj[u].is_empty() {
+            source = u;
+            break;
+        }
+    }
+
+    println!("Running Sequential Ground Truth BFS from random source {} (seed {})", source, args.seed);
+    let expected_distances = sequential_bfs(&graph, source);
     let reachable_nodes = expected_distances.iter().filter(|&&d| d != usize::MAX).count();
     println!("Ground Truth BFS finished. Reachable nodes: {}", reachable_nodes);
 

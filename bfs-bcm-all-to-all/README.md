@@ -49,7 +49,9 @@ Available arguments:
 - `-m, --message-chunk-size <SIZE>`: Size of chunks in bytes (default: 1048576).
 - `-r, --rows <ROWS>`: Sets the number of rows of the generated synthetic grid graph (default: 100).
 - `-c, --cols <COLS>`: Sets the number of columns of the generated synthetic grid graph (default: 100).
-- `-s, --source <SOURCE>`: ID of the source node for the BFS traversal (default: 0).
+- `-t, --trials <TRIALS>`: Number of BFS trials to execute (default: 64).
+- `--seed <SEED>`: Seed used to select the random source nodes for the trials (default: 27491095).
+- `-f, --graph-file <FILE>`: Path to a graph file (.el or .sg) to load instead of generating a grid.
 
 ### Execution Example
 
@@ -67,6 +69,49 @@ Execution completed in 491.68 ms
 ```
 
 The execution will also generate an `output_bfs_group-0.json` file in the same directory, containing a serialized array of the results and precise step-by-step timestamps for each worker. This structure directly mimics the JSON responses that would be returned by an action to the OpenWhisk controller.
+
+## Validation & Python Visualization
+
+You can use the built-in validator to sequentially run BFS and confirm all distances are correct:
+```bash
+cargo run --release --bin validator -- -f <path_to_graph> -j output_bfs_group-0.json --seed 27491095
+```
+
+To plot the execution times, phase differences, and performance:
+```bash
+python visualize_bfs.py output_bfs_group-0.json
+```
+
+## GAP Benchmark Suite (GAPBS) Integration
+
+This BFS implementation natively supports the standards and file formats (like the highly-efficient binary `.sg`) of the official **GAP Benchmark Suite**, executing `64` iterations with standardized seeds to provide 1-to-1 reproducible performance comparisons.
+
+### Generating GAPBS Graphs
+To generate the reference graphs directly on your testing cluster, clone and compile the GAPBS C++ repository:
+
+```bash
+git clone https://github.com/sbeamer/gapbs.git
+cd gapbs
+make
+```
+
+Use the compiled `converter` tool to generate synthetic datasets:
+- **Kronecker Graph (scale 27)**: `./converter -g 27 -o kron27.sg`
+- **Uniform Random Graph (scale 27, avg degree 16)**: `./converter -u 27 -k 16 -o urand27.sg`
+
+Alternatively, the GAPBS Makefile provides targets to automatically download and serialize real-world standard graphs (Warning: These require several gigabytes of storage and bandwidth):
+```bash
+make twitter.sg
+make web.sg
+make road.sg
+```
+
+### Loading GAPBS Graphs in Rust
+Once you have the `.sg` files, simply supply the file path to our binary. Thanks to memory-sharing pointers, the graph will only be loaded into RAM once, even if you spawn hundreds of threaded workers locally:
+
+```bash
+cargo run --release --bin bfs-bcm-all-to-all -- -b 4 -G 4 -t 64 -f /path/to/kron27.sg
+```
 
 ## Cleanup
 

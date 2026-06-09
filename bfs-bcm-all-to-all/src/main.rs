@@ -1,4 +1,4 @@
-use bfs_bcm_all_to_all::{main as ow_main, Input, BfsMessage};
+use bfs_bcm_all_to_all::{main as ow_main, Input, BfsMessage, Graph};
 use burst_communication_middleware::{
     BurstMiddleware, BurstOptions, Middleware, RedisListImpl, RedisListOptions, TokioChannelImpl,
     TokioChannelOptions,
@@ -41,8 +41,11 @@ struct Args {
     #[arg(short = 'c', long, default_value_t = 100)]
     cols: usize,
 
-    #[arg(short = 's', long, default_value_t = 0)]
-    source: usize,
+    #[arg(short = 't', long, default_value_t = 64)]
+    trials: u32,
+
+    #[arg(long, default_value_t = 27491095)]
+    seed: u64,
 
     #[arg(short = 'f', long)]
     graph_file: Option<String>,
@@ -120,6 +123,29 @@ fn main() {
     let mut actors_vec = actors.into_iter().collect::<Vec<_>>();
     actors_vec.sort_by(|(a, _), (b, _)| a.cmp(b));
 
+    // Load graph once in the main thread
+    let graph = if let Some(ref path) = args.graph_file {
+        println!("Loading graph from file: {}", path);
+        Graph::from_file(path)
+    } else {
+        println!("Generating grid graph {}x{}", args.rows, args.cols);
+        Graph::new_grid(args.rows, args.cols)
+    };
+    
+    let graph_ptr = &graph as *const Graph as usize;
+
+    use rand::{Rng, SeedableRng};
+    use rand::rngs::StdRng;
+    let mut rng = StdRng::seed_from_u64(args.seed);
+    let num_nodes = graph.adj.len();
+    let mut sources = Vec::new();
+    while sources.len() < args.trials as usize {
+        let u = (rng.next_u64() as usize) % num_nodes;
+        if !graph.adj[u].is_empty() {
+            sources.push(u);
+        }
+    }
+
     // For testing locally without passing individual JSON files, we will create the parameters programmatically
     // mirroring what the OpenWhisk loader would do, passing identical config to each worker.
     let mut params = Vec::with_capacity(args.burst_size as usize);
@@ -128,8 +154,8 @@ fn main() {
             rows: args.rows,
             cols: args.cols,
             num_threads: args.burst_size,
-            source: args.source,
-            graph_file: args.graph_file.clone(),
+            sources: sources.clone(),
+            graph_ptr,
         }).unwrap());
     }
 
