@@ -19,7 +19,7 @@ struct Args {
 // Sequential implementation that validates the output (i.e. the distances at which each node is
 // discovered, the exploration tree).
 fn sequential_bfs(graph: &Graph, source: usize) -> Vec<usize> {
-    let num_nodes = graph.adj.len();
+    let num_nodes = graph.num_nodes();
     let mut distances = vec![usize::MAX; num_nodes];
     let mut queue = VecDeque::new();
 
@@ -28,7 +28,7 @@ fn sequential_bfs(graph: &Graph, source: usize) -> Vec<usize> {
 
     while let Some(u) = queue.pop_front() {
         let current_dist = distances[u];
-        for &v in &graph.adj[u] {
+        for &v in graph.get_neighbors(u) {
             if distances[v] == usize::MAX {
                 distances[v] = current_dist + 1;
                 queue.push_back(v);
@@ -43,7 +43,7 @@ fn main() {
 
     println!("Loading Graph from {}...", args.graph_file);
     let graph = Graph::from_file(&args.graph_file);
-    let num_nodes = graph.adj.len();
+    let num_nodes = graph.num_nodes();
     println!("Graph loaded: {} nodes.", num_nodes);
 
     use rand::{Rng, SeedableRng};
@@ -52,7 +52,7 @@ fn main() {
     let mut source = 0;
     loop {
         let u = (rng.next_u64() as usize) % num_nodes;
-        if !graph.adj[u].is_empty() {
+        if graph.degree(u) > 0 {
             source = u;
             break;
         }
