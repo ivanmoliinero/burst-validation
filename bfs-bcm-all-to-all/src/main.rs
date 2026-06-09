@@ -132,7 +132,7 @@ fn main() {
         Graph::new_grid(args.rows, args.cols)
     };
 
-    println!("Graph generated/loaded! Starting workers creation...")
+    println!("Graph generated/loaded! Starting workers creation...");
     
     let graph_ptr = &graph as *const Graph as usize;
 
@@ -179,8 +179,8 @@ fn main() {
 
     let mut results = Vec::with_capacity(threads.len());
 
-    println!("Workers created! Waiting the threads...")
-    
+    println!("Workers created! Waiting the threads...");
+
     for thread in threads {
         let worker_result = thread.join().unwrap().unwrap();
         results.push(worker_result);
