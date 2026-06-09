@@ -144,11 +144,11 @@ fn main() {
     use rand::{Rng, SeedableRng};
     use rand::rngs::StdRng;
     let mut rng = StdRng::seed_from_u64(args.seed);
-    let num_nodes = graph.adj.len();
+    let num_nodes = graph.num_nodes();
     let mut sources = Vec::new();
     while sources.len() < args.trials as usize {
         let u = (rng.next_u64() as usize) % num_nodes;
-        if !graph.adj[u].is_empty() {
+        if graph.degree(u) > 0 {
             sources.push(u);
         }
     }

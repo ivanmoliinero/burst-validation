@@ -105,7 +105,7 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
 
     // Safety: we assume graph_ptr is a valid pointer to an immutable Graph allocated in main.rs
     let graph: &Graph = unsafe { &*(params.graph_ptr as *const Graph) };
-    let num_nodes = graph.adj.len();
+    let num_nodes = graph.num_nodes();
 
     let mut local_distances_out = Vec::new();
     let mut distances: Vec<AtomicUsize> = (0..num_nodes).map(|_| AtomicUsize::new(usize::MAX)).collect();
@@ -133,7 +133,7 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
             let mut local_discoveries = 0;
 
             for &u in &current_frontier {
-                for &v in &graph.adj[u] {
+                for &v in graph.get_neighbors(u) {
                     if (v as u32) % num_threads == worker_id {
                         if distances[v].load(Ordering::Relaxed) == usize::MAX {
                             distances[v].store(current_level + 1, Ordering::Relaxed);
