@@ -7,6 +7,9 @@ use std::time::Duration;
 struct Args {
     #[arg(long)]
     numa_node: Option<usize>,
+
+    #[arg(long)]
+    multi_thread: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -32,6 +35,7 @@ fn parse_cpulist(s: &str) -> Vec<usize> {
 fn main() {
     let args = Args::parse();
     let mut cpus_for_numa: Option<Vec<usize>> = None;
+    let mut cpus_for_other_numa: Option<Vec<usize>> = None;
 
     if let Some(numa_node) = args.numa_node {
         #[cfg(target_os = "linux")]
@@ -48,8 +52,29 @@ fn main() {
             if let Ok(cpulist) = std::fs::read_to_string(&cpulist_path) {
                 let parsed = parse_cpulist(&cpulist);
                 if !parsed.is_empty() {
-                    println!("Discovered {} CPUs for NUMA node {}", parsed.len(), numa_node);
+                    println!(
+                        "Discovered {} CPUs for target NUMA node {}",
+                        parsed.len(),
+                        numa_node
+                    );
                     cpus_for_numa = Some(parsed);
+                }
+            }
+
+            if args.multi_thread {
+                let other_node = if numa_node == 0 { 1 } else { 0 };
+                let other_cpulist_path =
+                    format!("/sys/devices/system/node/node{}/cpulist", other_node);
+                if let Ok(other_cpulist) = std::fs::read_to_string(&other_cpulist_path) {
+                    let parsed = parse_cpulist(&other_cpulist);
+                    if !parsed.is_empty() {
+                        println!(
+                            "Discovered {} CPUs for OTHER NUMA node {}",
+                            parsed.len(),
+                            other_node
+                        );
+                        cpus_for_other_numa = Some(parsed);
+                    }
                 }
             }
         }
@@ -59,31 +84,61 @@ fn main() {
         }
     }
 
-    let mut builder = rayon::ThreadPoolBuilder::new().num_threads(1);
+    let num_threads = if args.multi_thread { 2 } else { 1 };
+    let mut builder = rayon::ThreadPoolBuilder::new().num_threads(num_threads);
 
     #[cfg(target_os = "linux")]
     if let Some(cpus) = cpus_for_numa {
+        let other_cpus = cpus_for_other_numa.clone();
+        let is_multi = args.multi_thread;
+
         builder = builder.start_handler(move |thread_idx| unsafe {
             let mut set: libc::cpu_set_t = std::mem::zeroed();
-            for &cpu in &cpus {
-                libc::CPU_SET(cpu, &mut set);
+
+            if is_multi && thread_idx == 1 {
+                // Thread 1 goes to the OTHER socket
+                if let Some(ref o_cpus) = other_cpus {
+                    libc::CPU_SET(o_cpus[0], &mut set); // Pin to the first core of the other socket
+                } else {
+                    libc::CPU_SET(cpus[0], &mut set); // Fallback
+                }
+                println!("Thread 1 assigning affinity to OTHER socket");
+            } else {
+                // Thread 0 goes to the target socket
+                if is_multi {
+                    libc::CPU_SET(cpus[0], &mut set); // Pin strictly to first core
+                    println!("Thread 0 assigning affinity to TARGET socket");
+                } else {
+                    // Single thread mode: pin to all cores of the socket
+                    for &cpu in &cpus {
+                        libc::CPU_SET(cpu, &mut set);
+                    }
+                }
             }
+
             let ret = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
             if ret == 0 {
-                println!("Thread {} successfully pinned to NUMA node.", thread_idx);
+                println!(
+                    "Thread {} successfully pinned to its assigned core(s).",
+                    thread_idx
+                );
             } else {
-                eprintln!("Warning: failed to set CPU affinity for thread {}", thread_idx);
+                eprintln!(
+                    "Warning: failed to set CPU affinity for thread {}",
+                    thread_idx
+                );
             }
         });
     }
 
     let pool = builder.build().unwrap();
 
-    println!("Starting infinite memory allocation loop using 1 Rayon thread...");
-    
-    // We launch the memory consumer inside the Rayon thread pool to ensure 
-    // it inherits the NUMA affinity restrictions.
-    pool.install(|| {
+    println!(
+        "Starting memory allocation test with {} Rayon thread(s)...",
+        num_threads
+    );
+
+    let allocation_job = |id: usize| {
         let mut massive_vector: Vec<Vec<u8>> = Vec::new();
         let chunk_size = 512 * 1024 * 1024; // 512 MB per chunk
         let mut total_allocated_gb = 0.0;
@@ -91,9 +146,8 @@ fn main() {
         loop {
             // Allocate 512 MB
             let mut chunk = vec![0u8; chunk_size];
-            
+
             // We must WRITE to the memory to force Linux to actually assign physical pages
-            // (bypass the optimistic overcommit / virtual memory lazyness).
             for i in (0..chunk_size).step_by(4096) {
                 chunk[i] = 1;
             }
@@ -101,8 +155,19 @@ fn main() {
             massive_vector.push(chunk);
             total_allocated_gb += 0.5;
 
-            println!("Allocated total: {:.1} GB", total_allocated_gb);
+            println!(
+                "[Task {}] Allocated total: {:.1} GB",
+                id, total_allocated_gb
+            );
             std::thread::sleep(Duration::from_millis(100)); // Sleep slightly to allow reading logs
+        }
+    };
+
+    pool.install(|| {
+        if args.multi_thread {
+            rayon::join(|| allocation_job(0), || allocation_job(1));
+        } else {
+            allocation_job(0);
         }
     });
 }
