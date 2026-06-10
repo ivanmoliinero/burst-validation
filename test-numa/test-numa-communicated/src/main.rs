@@ -82,7 +82,7 @@ fn main() {
                 let padding_size = 20 * 1024 * 1024 * 1024; // 20 GB
                 let mut static_padding = vec![0u8; padding_size];
                 for i in (0..padding_size).step_by(4096) {
-                    static_padding[i] = 1; // Force page fault
+                    unsafe { std::ptr::write_volatile(&mut static_padding[i], 1); } // Force page fault, block LLVM optimizations
                 }
                 println!("[Node 0] 20GB static padding isolated.");
 
@@ -121,7 +121,7 @@ fn main() {
                 let padding_size = 20 * 1024 * 1024 * 1024; // 20 GB
                 let mut static_padding = vec![0u8; padding_size];
                 for i in (0..padding_size).step_by(4096) {
-                    static_padding[i] = 1; // Force page fault
+                    unsafe { std::ptr::write_volatile(&mut static_padding[i], 1); } // Force page fault, block LLVM optimizations
                 }
                 println!("[Node 1] 20GB static padding isolated.");
 
