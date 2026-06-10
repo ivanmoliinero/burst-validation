@@ -1,4 +1,4 @@
-use bfs_bcm_all_to_all::{main as ow_main, Input, BfsMessage, Graph};
+use bfs_bcm::{main as ow_main, BfsMessage, Graph, Input};
 use burst_communication_middleware::{
     BurstMiddleware, BurstOptions, Middleware, RedisListImpl, RedisListOptions, TokioChannelImpl,
     TokioChannelOptions,
@@ -105,11 +105,7 @@ fn main() {
         RedisListImpl,
         _,
         _,
-    >(
-        burst_options,
-        channel_options,
-        backend_options,
-    ));
+    >(burst_options, channel_options, backend_options));
 
     let proxies = tokio_runtime.block_on(fut).unwrap().unwrap();
 
@@ -127,7 +123,11 @@ fn main() {
     actors_vec.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     use std::time::{SystemTime, UNIX_EPOCH};
-    let start_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
+    let start_load = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string();
 
     // Load graph once in the main thread
     let graph = if let Some(ref path) = args.graph_file {
@@ -138,14 +138,18 @@ fn main() {
         Graph::new_grid(args.rows, args.cols)
     };
 
-    let end_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
+    let end_load = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string();
 
     println!("Graph generated/loaded! Starting workers creation...");
-    
+
     let graph_ptr = &graph as *const Graph as usize;
 
-    use rand::{Rng, SeedableRng};
     use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
     let mut rng = StdRng::seed_from_u64(args.seed);
     let num_nodes = graph.num_nodes();
     let mut sources = Vec::new();
@@ -160,16 +164,19 @@ fn main() {
     // mirroring what the OpenWhisk loader would do, passing identical config to each worker.
     let mut params = Vec::with_capacity(args.burst_size as usize);
     for _ in 0..args.burst_size {
-        params.push(serde_json::to_value(Input {
-            rows: args.rows,
-            cols: args.cols,
-            num_threads: args.burst_size,
-            sources: sources.clone(),
-            graph_ptr,
-            graph_load_start: start_load.clone(),
-            graph_generated: end_load.clone(),
-            comm_mode: args.comm_mode.clone(),
-        }).unwrap());
+        params.push(
+            serde_json::to_value(Input {
+                rows: args.rows,
+                cols: args.cols,
+                num_threads: args.burst_size,
+                sources: sources.clone(),
+                graph_ptr,
+                graph_load_start: start_load.clone(),
+                graph_generated: end_load.clone(),
+                comm_mode: args.comm_mode.clone(),
+            })
+            .unwrap(),
+        );
     }
 
     let start_par = Instant::now();

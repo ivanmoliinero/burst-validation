@@ -1,5 +1,5 @@
 [package]
-name = "bfs-bcm-all-to-all"
+name = "bfs-bcm-numa"
 version = "0.1.0"
 edition = "2024"
 

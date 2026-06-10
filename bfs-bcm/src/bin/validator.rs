@@ -1,4 +1,4 @@
-use bfs_bcm_all_to_all::{Graph, Output};
+use bfs_bcm::{Graph, Output};
 use clap::Parser;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -46,8 +46,8 @@ fn main() {
     let num_nodes = graph.num_nodes();
     println!("Graph loaded: {} nodes.", num_nodes);
 
-    use rand::{Rng, SeedableRng};
     use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
     let mut rng = StdRng::seed_from_u64(args.seed);
     let mut source = 0;
     loop {
@@ -58,15 +58,28 @@ fn main() {
         }
     }
 
-    println!("Running Sequential Ground Truth BFS from random source {} (seed {})", source, args.seed);
+    println!(
+        "Running Sequential Ground Truth BFS from random source {} (seed {})",
+        source, args.seed
+    );
     let expected_distances = sequential_bfs(&graph, source);
-    let reachable_nodes = expected_distances.iter().filter(|&&d| d != usize::MAX).count();
-    println!("Ground Truth BFS finished. Reachable nodes: {}", reachable_nodes);
+    let reachable_nodes = expected_distances
+        .iter()
+        .filter(|&&d| d != usize::MAX)
+        .count();
+    println!(
+        "Ground Truth BFS finished. Reachable nodes: {}",
+        reachable_nodes
+    );
 
-    println!("Loading distributed JSON results from {}...", args.json_result);
+    println!(
+        "Loading distributed JSON results from {}...",
+        args.json_result
+    );
     let file = File::open(&args.json_result).expect("Could not open JSON result file");
-    let distributed_outputs: Vec<Output> = serde_json::from_reader(file).expect("Could not parse JSON");
-    
+    let distributed_outputs: Vec<Output> =
+        serde_json::from_reader(file).expect("Could not parse JSON");
+
     let mut distributed_distances = HashMap::new();
     for output in distributed_outputs {
         for (node, dist) in output.local_distances {
@@ -76,7 +89,11 @@ fn main() {
 
     println!("Validating distributed results...");
     if distributed_distances.len() != reachable_nodes {
-        println!("❌ ERROR: Distributed BFS reached {} nodes, but Ground Truth reached {} nodes.", distributed_distances.len(), reachable_nodes);
+        println!(
+            "❌ ERROR: Distributed BFS reached {} nodes, but Ground Truth reached {} nodes.",
+            distributed_distances.len(),
+            reachable_nodes
+        );
         std::process::exit(1);
     }
 
@@ -84,7 +101,10 @@ fn main() {
     for (node, dist) in distributed_distances.iter() {
         let expected = expected_distances[*node];
         if *dist != expected {
-            println!("❌ ERROR: Node {} -> Expected Dist {}, Distributed Dist {}", node, expected, dist);
+            println!(
+                "❌ ERROR: Node {} -> Expected Dist {}, Distributed Dist {}",
+                node, expected, dist
+            );
             errors += 1;
             if errors > 10 {
                 println!("... and more errors. Aborting.");
