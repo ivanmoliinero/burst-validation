@@ -42,13 +42,20 @@ def generate_charts(json_file):
             for it in iters:
                 k_compute = f"trial_{t}_iter_{it}_compute"
                 k_alltoall = f"trial_{t}_iter_{it}_alltoall"
+                k_reduce = f"trial_{t}_iter_{it}_reduce"
+                k_broadcast = f"trial_{t}_iter_{it}_broadcast"
+                
                 k_process_prev = f"trial_{t}_iter_{it-1}_process" if it > 0 else f"trial_{t}_start"
+                if k_process_prev not in ts_dict and it > 0:
+                    k_process_prev = f"trial_{t}_iter_{it-1}_broadcast"
                 
                 if k_compute in ts_dict and k_process_prev in ts_dict:
                     compute_times.append(ts_dict[k_compute] - ts_dict[k_process_prev])
                     
                 if k_alltoall in ts_dict and k_compute in ts_dict:
                     comm_times.append(ts_dict[k_alltoall] - ts_dict[k_compute])
+                elif k_broadcast in ts_dict and k_compute in ts_dict:
+                    comm_times.append(ts_dict[k_broadcast] - ts_dict[k_compute])
 
         records_global.append(record)
 
