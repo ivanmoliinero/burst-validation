@@ -39,7 +39,7 @@ fn main() {
             println!("Pinning memory strictly to NUMA node {}", numa_node);
             let mut nodemask: libc::c_ulong = 1 << numa_node;
             // MPOL_BIND = 2
-            let ret = libc::set_mempolicy(2, &mut nodemask, 64);
+            let ret = libc::syscall(libc::SYS_set_mempolicy, 2, &mut nodemask, 64);
             if ret != 0 {
                 eprintln!("Warning: failed to set mempolicy (ret={})", ret);
             }
