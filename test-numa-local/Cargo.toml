@@ -1,0 +1,11 @@
+[package]
+name = "test-numa-local"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+rayon = "1.12.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.186"
