@@ -25,31 +25,8 @@ struct Args {
     #[arg(short = 'f', long)]
     graph_file: Option<String>,
 
-    #[arg(long)]
-    numa_node: Option<usize>,
-
     #[arg(long, default_value_t = 4)]
     threads: usize,
-}
-
-#[cfg(target_os = "linux")]
-fn parse_cpulist(s: &str) -> Vec<usize> {
-    let mut cpus = Vec::new();
-    for part in s.trim().split(',') {
-        let bounds: Vec<&str> = part.split('-').collect();
-        if bounds.len() == 1 {
-            if let Ok(c) = bounds[0].parse::<usize>() {
-                cpus.push(c);
-            }
-        } else if bounds.len() == 2 {
-            if let (Ok(start), Ok(end)) = (bounds[0].parse::<usize>(), bounds[1].parse::<usize>()) {
-                for c in start..=end {
-                    cpus.push(c);
-                }
-            }
-        }
-    }
-    cpus
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,62 +56,10 @@ fn main() {
     env_logger::init();
     let args = Args::parse();
 
-    let mut cpus_for_numa: Option<Vec<usize>> = None;
-
-    if let Some(numa_node) = args.numa_node {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            println!("Pinning memory to NUMA node {}", numa_node);
-            let mut nodemask: libc::c_ulong = 1 << numa_node;
-            // MPOL_BIND = 2
-            let ret = libc::syscall(libc::SYS_set_mempolicy, 2, &mut nodemask, 64);
-            if ret != 0 {
-                eprintln!("Warning: failed to set mempolicy (ret={})", ret);
-            }
-
-            let cpulist_path = format!("/sys/devices/system/node/node{}/cpulist", numa_node);
-            if let Ok(cpulist) = std::fs::read_to_string(&cpulist_path) {
-                let parsed = parse_cpulist(&cpulist);
-                if !parsed.is_empty() {
-                    println!(
-                        "Discovered {} CPUs for NUMA node {}",
-                        parsed.len(),
-                        numa_node
-                    );
-                    cpus_for_numa = Some(parsed);
-                } else {
-                    eprintln!("Warning: could not parse CPUs from {}", cpulist_path);
-                }
-            } else {
-                eprintln!("Warning: could not read {}", cpulist_path);
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            println!("Warning: NUMA affinity requested but not supported on this OS");
-        }
-    }
-
-    let mut builder = rayon::ThreadPoolBuilder::new().num_threads(args.threads);
-
-    #[cfg(target_os = "linux")]
-    if let Some(cpus) = cpus_for_numa {
-        builder = builder.start_handler(move |thread_idx| unsafe {
-            let mut set: libc::cpu_set_t = std::mem::zeroed();
-            for &cpu in &cpus {
-                libc::CPU_SET(cpu, &mut set);
-            }
-            let ret = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
-            if ret != 0 {
-                eprintln!(
-                    "Warning: failed to set CPU affinity for thread {}",
-                    thread_idx
-                );
-            }
-        });
-    }
-
-    builder.build_global().unwrap();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(args.threads)
+        .build_global()
+        .unwrap();
 
     println!("Threads configured: {}", args.threads);
 
