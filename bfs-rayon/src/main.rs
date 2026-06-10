@@ -223,7 +223,13 @@ fn main() {
         elapsed_par.as_secs_f64() * 1000.0
     );
 
+    // Free the massive graph memory before generating the JSON output
+    drop(graph);
+    println!("Graph memory freed.");
+
+    use std::io::BufWriter;
     let output_filename = format!("output_bfs_group-0.json");
     let output_file = std::fs::File::create(output_filename).unwrap();
-    serde_json::to_writer(output_file, &vec![output]).unwrap();
+    let writer = BufWriter::with_capacity(8 * 1024 * 1024, output_file);
+    serde_json::to_writer(writer, &vec![output]).unwrap();
 }
