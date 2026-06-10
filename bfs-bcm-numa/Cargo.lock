@@ -348,6 +348,7 @@ dependencies = [
  "crossbeam",
  "crossbeam-channel",
  "env_logger",
+ "libc",
  "log",
  "rand 0.10.1",
  "serde",
