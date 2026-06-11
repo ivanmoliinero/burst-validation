@@ -64,28 +64,39 @@ fn main() {
 
     let start_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros().to_string();
 
-    let (num_nodes, is_grid) = if let Some(ref path) = args.graph_file {
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    let (num_nodes, is_grid, sources) = if let Some(ref path) = args.graph_file {
         println!("Preliminary scan of graph from file: {}", path);
         let temp_graph = Graph::from_file(path);
         let n = temp_graph.num_nodes();
+        
+        let mut rng = StdRng::seed_from_u64(args.seed);
+        let mut valid_sources = Vec::new();
+        while valid_sources.len() < args.trials as usize {
+            let u = (rng.next_u64() as usize) % n;
+            if temp_graph.get_neighbors(u).len() > 0 {
+                valid_sources.push(u);
+            }
+        }
+        
         drop(temp_graph);
-        (n, false)
+        (n, false, valid_sources)
     } else {
         println!("Generating grid graph {}x{}", args.rows, args.cols);
-        (args.rows * args.cols, true)
+        let n = args.rows * args.cols;
+        let mut rng = StdRng::seed_from_u64(args.seed);
+        let mut valid_sources = Vec::new();
+        while valid_sources.len() < args.trials as usize {
+            let u = (rng.next_u64() as usize) % n;
+            valid_sources.push(u);
+        }
+        (n, true, valid_sources)
     };
 
     let end_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros().to_string();
     println!("Graph scanned! Nodes: {}", num_nodes);
-
-    use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
-    let mut rng = StdRng::seed_from_u64(args.seed);
-    let mut sources = Vec::new();
-    while sources.len() < args.trials as usize {
-        let u = (rng.next_u64() as usize) % num_nodes;
-        sources.push(u); 
-    }
 
     if args.numa_divide {
         println!("Running in INDEPENDENT NUMA MODE");
