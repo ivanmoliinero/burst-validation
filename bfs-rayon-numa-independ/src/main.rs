@@ -141,7 +141,8 @@ fn run_independent_mode(num_nodes: usize, is_grid: bool, args: Args, start_load:
                     .map(|_| AtomicUsize::new(usize::MAX))
                     .collect();
 
-                let builder = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
+                #[allow(unused_mut)]
+                let mut builder = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
                 #[cfg(target_os = "linux")]
                 {
                     builder = builder.start_handler(move |_| {
@@ -270,7 +271,8 @@ fn run_independent_mode(num_nodes: usize, is_grid: bool, args: Args, start_load:
                     .map(|_| AtomicUsize::new(usize::MAX))
                     .collect();
 
-                let builder = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
+                #[allow(unused_mut)]
+                let mut builder = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
                 #[cfg(target_os = "linux")]
                 {
                     builder = builder.start_handler(move |_| {
@@ -408,8 +410,10 @@ fn run_monolithic_mode(num_nodes: usize, _is_grid: bool, args: Args, start_load:
     let split_point = num_nodes / 2;
     let threads_per_node = std::cmp::max(1, args.threads / 2);
 
-    let builder0 = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
-    let builder1 = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
+    #[allow(unused_mut)]
+    let mut builder0 = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
+    #[allow(unused_mut)]
+    let mut builder1 = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
     #[cfg(target_os = "linux")]
     {
         builder0 = builder0.start_handler(move |_| {
