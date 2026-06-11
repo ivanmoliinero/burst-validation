@@ -200,15 +200,16 @@ fn main() {
     }
 
     let start_par = Instant::now();
+    let burst_size = args.burst_size;
 
     let threads = actors_vec
         .into_iter()
         .zip(params)
-        .map(|(proxies, param)| {
+        .map(move |(proxies, param)| {
             let numa_policy_clone = numa_policy.clone();
             thread::spawn(move || {
                 let (worker_id, proxy) = proxies;
-                numa_policy_clone.apply_thread_policy(worker_id);
+                numa_policy_clone.apply_thread_policy(worker_id, burst_size);
 
                 info!("thread start: id={}", worker_id);
                 let result = ow_main(param, proxy);

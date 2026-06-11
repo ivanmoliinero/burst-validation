@@ -88,10 +88,11 @@ impl NumaPolicy for DividedNumaPolicy {
         }
     }
 
-    fn apply_thread_policy(&self, worker_id: u32) {
+    fn apply_thread_policy(&self, worker_id: u32, num_workers: u32) {
         #[cfg(target_os = "linux")]
         unsafe {
-            let target_node = worker_id % 2; // worker 0 -> Node 0, worker 1 -> Node 1
+            let workers_per_node = std::cmp::max(1, num_workers / 2);
+            let target_node = worker_id / workers_per_node;
 
             // 1. Pin Memory (MPOL_BIND)
             let mut nodemask: libc::c_ulong = 1 << target_node;
