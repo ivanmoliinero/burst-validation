@@ -126,18 +126,8 @@ fn main() {
         // --- WORKER NODO 0 ---
         s.spawn(|| {
             pool0.install(|| {
-                println!("[Node 0] Reserving 20GB of static padding...");
-                let padding_size = 20 * 1024 * 1024 * 1024; // 20 GB
-                let mut static_padding = vec![0u8; padding_size];
-                for i in (0..padding_size).step_by(4096) {
-                    unsafe {
-                        std::ptr::write_volatile(&mut static_padding[i], 1);
-                    } // Force page fault, block LLVM optimizations
-                }
-                println!("[Node 0] 20GB static padding isolated.");
-
-                let ball_size = 10 * 1024 * 1024 * 1024; // 10 GB
-                println!("[Node 0] Generating 10GB Ball...");
+                let ball_size = 2 * 1024 * 1024 * 1024; // 2 GB
+                println!("[Node 0] Generating 2GB Ball...");
                 let mut ball = vec![0u8; ball_size];
                 for i in (0..ball_size).step_by(4096) {
                     ball[i] = 0;
@@ -162,58 +152,40 @@ fn main() {
                             64,
                             2, // MPOL_MF_MOVE
                         );
-                        println!("[Node 0] 10GB Ball physically pinned to Node 0.");
+                        println!("[Node 0] 2GB Ball physically pinned to Node 0.");
                     }
                 }
 
-                for step in 1..=20 {
-                    println!("\n--- PING PONG ITERATION {} ---", step);
-                    
-                    #[cfg(target_os = "linux")]
-                    {
-                        let (n0, n1) = check_numa_distribution(ball.as_ptr(), ball.len());
-                        println!("[Node 0] RAM Distribution: {:.1}% Node 0 | {:.1}% Node 1", n0, n1);
-                    }
-                    
-                    let start = Instant::now();
-                    for chunk in ball.chunks_exact_mut(4096) {
-                        chunk[0] = chunk[0].wrapping_add(1);
-                    }
-                    let elapsed = start.elapsed();
-                    println!("[Node 0] Local Write (10GB) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
+                println!("[Node 0] Sending ball to Node 1 and waiting passively...");
+                // Send the ball
+                tx_01.send(ball).unwrap();
 
-                    // Send the ball
-                    tx_01.send(ball).unwrap();
-
-                    // Receive the ball back
-                    ball = rx_10.recv().unwrap();
-                }
-
-                std::thread::sleep(Duration::from_secs(3600)); // Hold memory
+                // Receive the ball back after Node 1 finishes 500 iterations
+                let _ball = rx_10.recv().unwrap();
+                println!("[Node 0] Ball received back. Test complete.");
             });
         });
 
         // --- WORKER NODO 1 ---
         s.spawn(|| {
             pool1.install(|| {
-                println!("[Node 1] Reserving 20GB of static padding...");
-                let padding_size = 20 * 1024 * 1024 * 1024; // 20 GB
-                let mut static_padding = vec![0u8; padding_size];
-                for i in (0..padding_size).step_by(4096) {
-                    unsafe {
-                        std::ptr::write_volatile(&mut static_padding[i], 1);
-                    } // Force page fault, block LLVM optimizations
-                }
-                println!("[Node 1] 20GB static padding isolated.");
+                println!("[Node 1] Waiting for 2GB Ball from Node 0...");
 
-                for _step in 1..=20 {
-                    // Receive the ball
-                    let mut ball = rx_01.recv().unwrap();
+                // Receive the ball
+                let mut ball = rx_01.recv().unwrap();
+                println!("[Node 1] Ball received! Starting 500 iteration loop...");
+
+                for step in 1..=500 {
+                    if step % 20 == 1 || step == 500 {
+                        println!("\n--- ASYMMETRIC ITERATION {} ---", step);
+                    }
 
                     #[cfg(target_os = "linux")]
                     {
-                        let (n0, n1) = check_numa_distribution(ball.as_ptr(), ball.len());
-                        println!("[Node 1] RAM Distribution: {:.1}% Node 0 | {:.1}% Node 1", n0, n1);
+                        if step % 20 == 1 || step == 500 {
+                            let (n0, n1) = check_numa_distribution(ball.as_ptr(), ball.len());
+                            println!("[Node 1] RAM Distribution: {:.1}% Node 0 | {:.1}% Node 1", n0, n1);
+                        }
                     }
 
                     let start = Instant::now();
@@ -221,13 +193,15 @@ fn main() {
                         chunk[0] = chunk[0].wrapping_add(1);
                     }
                     let elapsed = start.elapsed();
-                    println!("[Node 1] Remote Write (10GB NUMA MISS) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
-
-                    // Send the ball back
-                    tx_10.send(ball).unwrap();
+                    
+                    if step % 20 == 1 || step == 500 {
+                        println!("[Node 1] Continuous Write (2GB) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
+                    }
                 }
 
-                std::thread::sleep(Duration::from_secs(3600)); // Hold memory
+                // Send the ball back
+                println!("[Node 1] 500 iterations complete. Sending back to Node 0...");
+                tx_10.send(ball).unwrap();
             });
         });
     });
