@@ -32,7 +32,7 @@ fn parse_cpulist(s: &str) -> Vec<usize> {
 fn main() {
     let args = Args::parse();
     let deactivate_autonuma = args.deactivate_autonuma;
-    
+
     let mut cpus_node0: Option<Vec<usize>> = None;
     let mut cpus_node1: Option<Vec<usize>> = None;
 
@@ -86,7 +86,9 @@ fn main() {
                 let padding_size = 20 * 1024 * 1024 * 1024; // 20 GB
                 let mut static_padding = vec![0u8; padding_size];
                 for i in (0..padding_size).step_by(4096) {
-                    unsafe { std::ptr::write_volatile(&mut static_padding[i], 1); } // Force page fault, block LLVM optimizations
+                    unsafe {
+                        std::ptr::write_volatile(&mut static_padding[i], 1);
+                    } // Force page fault, block LLVM optimizations
                 }
                 println!("[Node 0] 20GB static padding isolated.");
 
@@ -123,13 +125,16 @@ fn main() {
                 let mut step = 1;
                 loop {
                     println!("\n--- PING PONG ITERATION {} ---", step);
-                    
+
                     let start = Instant::now();
                     for i in (0..ball_size).step_by(4096) {
                         ball[i] = ball[i].wrapping_add(1);
                     }
                     let elapsed = start.elapsed();
-                    println!("[Node 0] Local Write (10GB) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
+                    println!(
+                        "[Node 0] Local Write (10GB) took: {:.2} ms",
+                        elapsed.as_secs_f64() * 1000.0
+                    );
 
                     // Send the ball
                     tx_01.send(ball).unwrap();
@@ -137,7 +142,11 @@ fn main() {
                     // Receive the ball back
                     ball = rx_10.recv().unwrap();
 
-                    std::thread::sleep(Duration::from_secs(1));
+                    // Active polling: avoid core deallocation.
+                    let wait_until = Instant::now() + Duration::from_secs(1);
+                    while Instant::now() < wait_until {
+                        std::hint::spin_loop();
+                    }
                     step += 1;
                 }
             });
@@ -150,7 +159,9 @@ fn main() {
                 let padding_size = 20 * 1024 * 1024 * 1024; // 20 GB
                 let mut static_padding = vec![0u8; padding_size];
                 for i in (0..padding_size).step_by(4096) {
-                    unsafe { std::ptr::write_volatile(&mut static_padding[i], 1); } // Force page fault, block LLVM optimizations
+                    unsafe {
+                        std::ptr::write_volatile(&mut static_padding[i], 1);
+                    } // Force page fault, block LLVM optimizations
                 }
                 println!("[Node 1] 20GB static padding isolated.");
 
@@ -164,7 +175,10 @@ fn main() {
                         ball[i] = ball[i].wrapping_add(1);
                     }
                     let elapsed = start.elapsed();
-                    println!("[Node 1] Remote Write (10GB NUMA MISS) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
+                    println!(
+                        "[Node 1] Remote Write (10GB NUMA MISS) took: {:.2} ms",
+                        elapsed.as_secs_f64() * 1000.0
+                    );
 
                     // Send the ball back
                     tx_10.send(ball).unwrap();
