@@ -10,6 +10,8 @@ pub use gapbs_parser::Graph;
 pub mod strategies;
 use strategies::BfsStrategy;
 
+pub mod numa;
+
 pub const ROOT_WORKER: u32 = 0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +109,7 @@ fn bfs(params: Input, actor: &MiddlewareActorHandle<BfsMessage>) -> Output {
 
     let strategy: Box<dyn BfsStrategy> = match params.comm_mode.as_str() {
         "all-to-all" => Box::new(strategies::all_to_all::AllToAllStrategy),
+        "all-to-all-numa" => Box::new(strategies::all_to_all_numa::AllToAllNumaStrategy),
         "broadcast-reduce" => Box::new(strategies::broadcast_reduce::BroadcastReduceStrategy),
         "scatter-reduce" => Box::new(strategies::scatter_reduce::ScatterReduceStrategy),
         _ => panic!("Unknown communication mode: {}", params.comm_mode),

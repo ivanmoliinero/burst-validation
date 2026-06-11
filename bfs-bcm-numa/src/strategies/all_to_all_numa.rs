@@ -3,9 +3,9 @@ use std::time::SystemTime;
 use crate::{BfsMessage, Input, Output, Graph, timestamp, Timestamp, ROOT_WORKER};
 use super::BfsStrategy;
 
-pub struct AllToAllStrategy;
+pub struct AllToAllNumaStrategy;
 
-impl BfsStrategy for AllToAllStrategy {
+impl BfsStrategy for AllToAllNumaStrategy {
     fn execute(
         &self,
         params: &Input,
@@ -26,7 +26,8 @@ impl BfsStrategy for AllToAllStrategy {
         let num_threads = params.num_threads;
         let num_nodes = graph.num_nodes();
 
-        let local_distances_size = (num_nodes / num_threads as usize) + 1;
+        let chunk_size = (num_nodes + num_threads as usize - 1) / num_threads as usize;
+        let local_distances_size = chunk_size;
         let mut local_distances_out = Vec::new();
         let mut distances: Vec<usize> = vec![usize::MAX; local_distances_size];
 
@@ -41,8 +42,8 @@ impl BfsStrategy for AllToAllStrategy {
             let mut next_frontier: Vec<usize> = Vec::new();
             let mut current_level = 0;
 
-            if source as u32 % num_threads == worker_id {
-                let local_source = source / num_threads as usize;
+            if (source as u32 / chunk_size as u32) == worker_id {
+                let local_source = source - (worker_id as usize * chunk_size);
                 distances[local_source] = 0;
                 current_frontier.push(source);
             }
@@ -57,8 +58,9 @@ impl BfsStrategy for AllToAllStrategy {
 
                 for &u in &current_frontier {
                     for &v in graph.get_neighbors(u) {
-                        if (v as u32) % num_threads == worker_id {
-                            let local_v = v / num_threads as usize;
+                        let owner = (v as u32) / chunk_size as u32;
+                        if owner == worker_id {
+                            let local_v = v - (worker_id as usize * chunk_size);
                             if distances[local_v] == usize::MAX {
                                 distances[local_v] = current_level + 1;
                                 next_frontier.push(v);
@@ -70,7 +72,6 @@ impl BfsStrategy for AllToAllStrategy {
                             // Check whether it has been already assigned.
                             if (sent_bitvec[word_idx] & mask) == 0 {
                                 sent_bitvec[word_idx] |= mask;
-                                let owner = (v as u32) % num_threads;
                                 out_chunks[owner as usize].push(v);
                                 local_discoveries += 1;
                             }
@@ -126,7 +127,7 @@ impl BfsStrategy for AllToAllStrategy {
                     }
 
                     for &v in payload {
-                        let local_v = v / num_threads as usize;
+                        let local_v = v - (worker_id as usize * chunk_size);
                         if distances[local_v] == usize::MAX {
                             distances[local_v] = current_level + 1;
                             next_frontier.push(v);
@@ -165,8 +166,7 @@ impl BfsStrategy for AllToAllStrategy {
             if trial == 0 {
                 for (local_node, &d) in distances.iter().enumerate() {
                     if d != usize::MAX {
-                        let global_node =
-                            local_node * (num_threads as usize) + (worker_id as usize);
+                        let global_node = local_node + (worker_id as usize * chunk_size);
                         if global_node < num_nodes {
                             local_distances_out.push((global_node, d));
                         }

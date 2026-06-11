@@ -1,4 +1,4 @@
-use bfs_bcm_numa::{main as ow_main, BfsMessage, Graph, Input};
+use bfs_bcm_numa::{BfsMessage, Graph, Input, main as ow_main};
 use burst_communication_middleware::{
     BurstMiddleware, BurstOptions, Middleware, RedisListImpl, RedisListOptions, TokioChannelImpl,
     TokioChannelOptions,
@@ -52,6 +52,9 @@ struct Args {
 
     #[arg(short = 'C', long = "comm-mode", default_value = "all-to-all")]
     comm_mode: String,
+
+    #[arg(long, default_value_t = false)]
+    numa_divide: bool,
 }
 
 fn main() {
@@ -146,54 +149,17 @@ fn main() {
 
     println!("Graph generated/loaded! Starting workers creation...");
 
-    #[cfg(target_os = "linux")]
-    unsafe {
-        println!("Applying mbind to physically partition the Graph RAM...");
-        let target_node = 1;
-        let mut nodemask: libc::c_ulong = 1 << target_node;
+    use bfs_bcm_numa::numa::{
+        NumaPolicy, divided::DividedNumaPolicy, monolithic::MonolithicNumaPolicy,
+    };
+    use std::sync::Arc;
+    let numa_policy: Arc<dyn NumaPolicy> = if args.numa_divide {
+        Arc::new(DividedNumaPolicy)
+    } else {
+        Arc::new(MonolithicNumaPolicy)
+    };
 
-        let offsets_len = graph.offsets.len();
-        let offsets_mid = offsets_len / 2;
-        // Find the page-aligned starting address for mbind
-        // mbind requires the address to be page-aligned (usually 4096 bytes)
-        let raw_ptr = graph.offsets.as_ptr().add(offsets_mid) as usize;
-        let aligned_ptr = raw_ptr & !(4096 - 1);
-        let alignment_offset = raw_ptr - aligned_ptr;
-        let offsets_bytes_to_move =
-            (offsets_len - offsets_mid) * std::mem::size_of::<usize>() + alignment_offset;
-
-        // MPOL_BIND = 2, MPOL_MF_MOVE = 2
-        let ret1 = libc::syscall(
-            libc::SYS_mbind,
-            aligned_ptr as *mut libc::c_void,
-            offsets_bytes_to_move,
-            2,
-            &mut nodemask,
-            64,
-            2,
-        );
-
-        let edges_mid = graph.offsets[offsets_mid];
-        let edges_len = graph.edges.len();
-
-        let raw_edges_ptr = graph.edges.as_ptr().add(edges_mid) as usize;
-        let aligned_edges_ptr = raw_edges_ptr & !(4096 - 1);
-        let edges_alignment_offset = raw_edges_ptr - aligned_edges_ptr;
-        let edges_bytes_to_move =
-            (edges_len - edges_mid) * std::mem::size_of::<usize>() + edges_alignment_offset;
-
-        let ret2 = libc::syscall(
-            libc::SYS_mbind,
-            aligned_edges_ptr as *mut libc::c_void,
-            edges_bytes_to_move,
-            2,
-            &mut nodemask,
-            64,
-            2,
-        );
-
-        println!("mbind offsets ret: {}, mbind edges ret: {}", ret1, ret2);
-    }
+    numa_policy.apply_memory_policy(&graph);
 
     let graph_ptr = &graph as *const Graph as usize;
 
@@ -208,6 +174,11 @@ fn main() {
             sources.push(u);
         }
     }
+    let actual_comm_mode = if args.numa_divide {
+        "all-to-all-numa".to_string()
+    } else {
+        "all-to-all".to_string()
+    };
 
     // For testing locally without passing individual JSON files, we will create the parameters programmatically
     // mirroring what the OpenWhisk loader would do, passing identical config to each worker.
@@ -222,7 +193,7 @@ fn main() {
                 graph_ptr,
                 graph_load_start: start_load.clone(),
                 graph_generated: end_load.clone(),
-                comm_mode: args.comm_mode.clone(),
+                comm_mode: actual_comm_mode.clone(),
             })
             .unwrap(),
         );
@@ -234,51 +205,10 @@ fn main() {
         .into_iter()
         .zip(params)
         .map(|(proxies, param)| {
+            let numa_policy_clone = numa_policy.clone();
             thread::spawn(move || {
                 let (worker_id, proxy) = proxies;
-
-                #[cfg(target_os = "linux")]
-                unsafe {
-                    let target_node = worker_id % 2; // worker 0 -> Node 0, worker 1 -> Node 1
-
-                    // 1. Pin Memory (MPOL_BIND)
-                    let mut nodemask: libc::c_ulong = 1 << target_node;
-                    libc::syscall(libc::SYS_set_mempolicy, 2, &mut nodemask, 64);
-
-                    // 2. Pin CPU (sched_setaffinity)
-                    let cpulist_path =
-                        format!("/sys/devices/system/node/node{}/cpulist", target_node);
-                    if let Ok(cpulist) = std::fs::read_to_string(&cpulist_path) {
-                        let mut cpus = Vec::new();
-                        for part in cpulist.trim().split(',') {
-                            let bounds: Vec<&str> = part.split('-').collect();
-                            if bounds.len() == 1 {
-                                if let Ok(c) = bounds[0].parse::<usize>() {
-                                    cpus.push(c);
-                                }
-                            } else if bounds.len() == 2 {
-                                if let (Ok(start), Ok(end)) =
-                                    (bounds[0].parse::<usize>(), bounds[1].parse::<usize>())
-                                {
-                                    for c in start..=end {
-                                        cpus.push(c);
-                                    }
-                                }
-                            }
-                        }
-                        if !cpus.is_empty() {
-                            let mut set: libc::cpu_set_t = std::mem::zeroed();
-                            for cpu in cpus {
-                                libc::CPU_SET(cpu, &mut set);
-                            }
-                            libc::sched_setaffinity(
-                                0,
-                                std::mem::size_of::<libc::cpu_set_t>(),
-                                &set,
-                            );
-                        } // else, do not pin
-                    }
-                }
+                numa_policy_clone.apply_thread_policy(worker_id);
 
                 info!("thread start: id={}", worker_id);
                 let result = ow_main(param, proxy);
