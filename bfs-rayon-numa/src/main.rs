@@ -55,10 +55,10 @@ pub struct Timestamp {
 pub fn timestamp(key: String) -> Timestamp {
     let current_system_time = SystemTime::now();
     let duration_since_epoch = current_system_time.duration_since(UNIX_EPOCH).unwrap();
-    let milliseconds_timestamp = duration_since_epoch.as_millis();
+    let microseconds_timestamp = duration_since_epoch.as_micros();
     Timestamp {
         key,
-        value: milliseconds_timestamp.to_string(),
+        value: microseconds_timestamp.to_string(),
     }
 }
 
@@ -69,7 +69,7 @@ fn main() {
     let threads_per_node = std::cmp::max(1, args.threads / 2);
     println!("Threads configured per NUMA node: {}", threads_per_node);
 
-    let start_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
+    let start_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros().to_string();
 
     let graph = if let Some(ref path) = args.graph_file {
         println!("Loading graph from file: {}", path);
@@ -79,7 +79,7 @@ fn main() {
         Graph::new_grid(args.rows, args.cols)
     };
 
-    let end_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string();
+    let end_load = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros().to_string();
 
     let num_nodes = graph.num_nodes();
     println!("Graph generated/loaded! Nodes: {}", num_nodes);
@@ -97,9 +97,11 @@ fn main() {
 
     policy.apply_memory_policy(&graph, &mut distances);
 
-    // 2. Rayon Pools tied to NUMA nodes
+    #[allow(unused_variables)]
     let create_pool = |worker_id: u32| {
+        #[allow(unused_variables)]
         let policy_clone = policy.clone();
+        #[allow(unused_mut)]
         let mut builder = rayon::ThreadPoolBuilder::new().num_threads(threads_per_node);
         #[cfg(target_os = "linux")]
         {
@@ -161,6 +163,7 @@ fn main() {
         
         let (tx_sync_01, rx_sync_01) = bounded::<usize>(1);
         let (tx_sync_10, rx_sync_10) = bounded::<usize>(1);
+        let (tx_ts, rx_ts) = bounded::<Vec<Timestamp>>(1);
 
         let mut initial_frontier_0 = Vec::new();
         let mut initial_frontier_1 = Vec::new();
@@ -173,12 +176,19 @@ fn main() {
         std::thread::scope(|s| {
             // --- DELEGADO NODO 0 ---
             s.spawn(|| {
+                let mut local_ts = Vec::new();
                 let mut current_frontier = initial_frontier_0;
                 let mut current_level = 0;
                 let mut iter_start = SystemTime::now();
+                let sent_bitvec: Vec<std::sync::atomic::AtomicU64> = (0..((num_nodes / 64) + 1)).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
 
                 loop {
+                    local_ts.push(timestamp(format!("trial_{}_iter_{}_compute", trial, current_level)));
+
                     // Fase A: Exploración Local en pool0
+                    pool0.install(|| {
+                        sent_bitvec.par_iter().for_each(|x| x.store(0, Ordering::Relaxed));
+                    });
                     let (mut next_local, export_to_node1) = pool0.install(|| {
                         current_frontier.par_iter().fold(
                             || (Vec::new(), Vec::new()),
@@ -191,8 +201,11 @@ fn main() {
                                                 local_acc.0.push(v);
                                             }
                                         } else {
-                                            // Pertenece a Nodo 1 -> Buzón
-                                            local_acc.1.push(v);
+                                            let word_idx = v / 64;
+                                            let mask = 1u64 << (v % 64);
+                                            if (sent_bitvec[word_idx].fetch_or(mask, Ordering::Relaxed) & mask) == 0 {
+                                                local_acc.1.push(v);
+                                            }
                                         }
                                     }
                                 }
@@ -207,6 +220,8 @@ fn main() {
                             }
                         )
                     });
+
+                    local_ts.push(timestamp(format!("trial_{}_iter_{}_crossbeam", trial, current_level)));
 
                     // Fase B: Comunicación Delegada
                     tx_01.send(export_to_node1).unwrap();
@@ -225,6 +240,8 @@ fn main() {
                     tx_sync_01.send(next_local.len()).unwrap();
                     let remote_len = rx_sync_10.recv().unwrap();
 
+                    local_ts.push(timestamp(format!("trial_{}_iter_{}_process", trial, current_level)));
+
                     if let Ok(elapsed) = iter_start.elapsed() {
                         println!("[Node 0] Trial {} | Iter {} | Sync passed {:.3}ms | Local Frontier: {} | Remote Frontier: {}",
                             trial, current_level, elapsed.as_secs_f64() * 1000.0, next_local.len(), remote_len);
@@ -238,6 +255,7 @@ fn main() {
                     current_level += 1;
                     iter_start = SystemTime::now();
                 }
+                tx_ts.send(local_ts).unwrap();
             });
 
             // --- DELEGADO NODO 1 ---
@@ -245,9 +263,13 @@ fn main() {
                 let mut current_frontier = initial_frontier_1;
                 let mut current_level = 0;
                 let mut iter_start = SystemTime::now();
+                let sent_bitvec: Vec<std::sync::atomic::AtomicU64> = (0..((num_nodes / 64) + 1)).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
 
                 loop {
                     // Fase A: Exploración Local en pool1
+                    pool1.install(|| {
+                        sent_bitvec.par_iter().for_each(|x| x.store(0, Ordering::Relaxed));
+                    });
                     let (mut next_local, export_to_node0) = pool1.install(|| {
                         current_frontier.par_iter().fold(
                             || (Vec::new(), Vec::new()),
@@ -260,8 +282,11 @@ fn main() {
                                                 local_acc.0.push(v);
                                             }
                                         } else {
-                                            // Pertenece a Nodo 0 -> Buzón
-                                            local_acc.1.push(v);
+                                            let word_idx = v / 64;
+                                            let mask = 1u64 << (v % 64);
+                                            if (sent_bitvec[word_idx].fetch_or(mask, Ordering::Relaxed) & mask) == 0 {
+                                                local_acc.1.push(v);
+                                            }
                                         }
                                     }
                                 }
@@ -310,6 +335,7 @@ fn main() {
             });
         });
 
+        timestamps.extend(rx_ts.recv().unwrap());
         timestamps.push(timestamp(format!("trial_{}_end", trial)));
 
         if trial == 0 {

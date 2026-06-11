@@ -4,6 +4,7 @@ use super::NumaPolicy;
 pub struct MonolithicNumaPolicy;
 
 impl NumaPolicy for MonolithicNumaPolicy {
+    #[allow(unused_variables)]
     fn apply_memory_policy(&self, graph: &Graph, distances: &mut [std::sync::atomic::AtomicUsize]) {
         #[cfg(target_os = "linux")]
         unsafe {
@@ -63,6 +64,7 @@ impl NumaPolicy for MonolithicNumaPolicy {
         }
     }
 
+    #[allow(unused_variables)]
     fn apply_thread_policy(&self, worker_id: u32) {
         #[cfg(target_os = "linux")]
         unsafe {

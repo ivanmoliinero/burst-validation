@@ -95,10 +95,29 @@ def generate_charts(json_file):
     for i, v in enumerate([avg_compute, avg_comm]):
         ax2.text(i, v + (v*0.01), f"{v:.2f} ms", ha='center', fontweight='bold')
 
+
+    min_start = float('inf')
+    max_end = 0
+    for worker_data in data:
+        ts_dict = {ts['key']: int(ts['value']) for ts in worker_data.get('timestamps', [])}
+        if 'worker_start' in ts_dict:
+            min_start = min(min_start, ts_dict['worker_start'])
+        if 'worker_end' in ts_dict:
+            max_end = max(max_end, ts_dict['worker_end'])
+            
+    if min_start < float('inf') and max_end > 0:
+        total_time_sec = (max_end - min_start) / 1000.0
+        fig.suptitle(f"Tiempo Total de Ejecución: {total_time_sec:.2f} segundos", fontsize=16, fontweight='bold')
+        print(f"Tiempo Total de Ejecución: {total_time_sec:.2f} segundos")
+
     plt.tight_layout()
-    out_file = 'bfs_analysis.png'
+    if min_start < float('inf') and max_end > 0:
+        fig.subplots_adjust(top=0.9)
+
+    out_file =  'bfs_analysis.png'
     plt.savefig(out_file)
     print(f"Gráficos generados correctamente en '{out_file}'")
+
 
 if __name__ == "__main__":
     file_name = sys.argv[1] if len(sys.argv) > 1 else 'output_test_group-0.json'

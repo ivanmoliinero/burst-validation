@@ -11,6 +11,7 @@ def generate_charts(json_file):
     
     records_global = []
     compute_times = []
+    comm_times = []
 
     for i, worker_data in enumerate(data):
         worker_id = worker_data.get('worker_id', i)
@@ -21,7 +22,7 @@ def generate_charts(json_file):
         # 1. Global Processing Times
         graph_gen_time = 0
         if 'graph_generated' in ts_dict and 'worker_start' in ts_dict:
-            graph_gen_time = ts_dict['graph_generated'] - ts_dict['worker_start']
+            graph_gen_time = (ts_dict['graph_generated'] - ts_dict['worker_start']) / 1000.0
             
         record = {
             'worker': worker_name,
@@ -32,18 +33,24 @@ def generate_charts(json_file):
         
         for idx, t in enumerate(trials):
             if f"trial_{t}_start" in ts_dict and f"trial_{t}_end" in ts_dict:
-                time_taken = ts_dict[f"trial_{t}_end"] - ts_dict[f"trial_{t}_start"]
+                time_taken = (ts_dict[f"trial_{t}_end"] - ts_dict[f"trial_{t}_start"]) / 1000.0
                 record[f'Trial {idx}'] = time_taken
             
             # 2. Extract Processing times per iteration for each trial
             iters = sorted(list(set([int(re.search(r'_iter_(\d+)_', k).group(1)) for k in ts_dict.keys() if f"trial_{t}_iter_" in k])))
             
+            comm_times = [] # we will define comm_times globally later
+            
             for it in iters:
                 k_compute = f"trial_{t}_iter_{it}_compute"
+                k_crossbeam = f"trial_{t}_iter_{it}_crossbeam"
                 k_process = f"trial_{t}_iter_{it}_process"
                 
-                if k_compute in ts_dict and k_process in ts_dict:
-                    compute_times.append(ts_dict[k_process] - ts_dict[k_compute])
+                if k_compute in ts_dict and k_crossbeam in ts_dict:
+                    compute_times.append((ts_dict[k_crossbeam] - ts_dict[k_compute]) / 1000.0)
+                
+                if k_crossbeam in ts_dict and k_process in ts_dict:
+                    comm_times.append((ts_dict[k_process] - ts_dict[k_crossbeam]) / 1000.0)
 
         records_global.append(record)
 
@@ -74,18 +81,39 @@ def generate_charts(json_file):
     
     # Plot 2: Average times per iteration across all trials
     avg_compute = np.mean(compute_times) if compute_times else 0
+    avg_comm = np.mean(comm_times) if comm_times else 0
     
-    ax2.bar(['Cómputo Local (Rayon)'], [avg_compute], color=['#4C72B0'], width=0.5)
+    ax2.bar(['Cómputo Local (Rayon)', 'Comunicación (Crossbeam)'], [avg_compute, avg_comm], color=['#4C72B0', '#DD8452'], width=0.5)
     ax2.set_ylabel('Tiempo Medio (ms)')
     ax2.set_title('Promedios por Iteración (Todos los Trials)')
-    ax2.set_xlim(-0.5, 0.5)
+    ax2.set_xlim(-0.5, 1.5)
     
-    ax2.text(0, avg_compute + (avg_compute*0.01), f"{avg_compute:.2f} ms", ha='center', fontweight='bold')
+    for i, v in enumerate([avg_compute, avg_comm]):
+        ax2.text(i, v + (v*0.01), f"{v:.2f} ms", ha='center', fontweight='bold')
+
+
+    min_start = float('inf')
+    max_end = 0
+    for worker_data in data:
+        ts_dict = {ts['key']: int(ts['value']) for ts in worker_data.get('timestamps', [])}
+        if 'worker_start' in ts_dict:
+            min_start = min(min_start, ts_dict['worker_start'])
+        if 'worker_end' in ts_dict:
+            max_end = max(max_end, ts_dict['worker_end'])
+            
+    if min_start < float('inf') and max_end > 0:
+        total_time_sec = (max_end - min_start) / 1000000.0
+        fig.suptitle(f"Tiempo Total de Ejecución: {total_time_sec:.2f} segundos", fontsize=16, fontweight='bold')
+        print(f"Tiempo Total de Ejecución: {total_time_sec:.2f} segundos")
 
     plt.tight_layout()
-    out_file = 'bfs_rayon_analysis.png'
+    if min_start < float('inf') and max_end > 0:
+        fig.subplots_adjust(top=0.9)
+
+    out_file =  'bfs_rayon_analysis.png'
     plt.savefig(out_file)
     print(f"Gráficos generados correctamente en '{out_file}'")
+
 
 if __name__ == "__main__":
     file_name = sys.argv[1] if len(sys.argv) > 1 else 'output_bfs_group-0.json'
