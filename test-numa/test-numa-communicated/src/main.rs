@@ -29,6 +29,48 @@ fn parse_cpulist(s: &str) -> Vec<usize> {
     cpus
 }
 
+#[cfg(target_os = "linux")]
+fn check_numa_distribution(ptr: *const u8, size: usize) -> (f64, f64) {
+    let page_size = 4096;
+    let total_pages = size / page_size;
+    
+    let samples = 1000;
+    let step = if total_pages > samples { total_pages / samples } else { 1 };
+    
+    let mut pages: Vec<*const libc::c_void> = Vec::with_capacity(samples);
+    for i in (0..total_pages).step_by(step).take(samples) {
+        unsafe {
+            pages.push(ptr.add(i * page_size) as *const libc::c_void);
+        }
+    }
+    
+    let actual_samples = pages.len();
+    let mut status: Vec<libc::c_int> = vec![-1; actual_samples];
+    
+    unsafe {
+        libc::syscall(
+            libc::SYS_move_pages,
+            0, // pid 0 = self
+            actual_samples as libc::c_ulong,
+            pages.as_ptr(),
+            std::ptr::null::<libc::c_int>(), // nodes = NULL means just query
+            status.as_mut_ptr(),
+            0,
+        );
+    }
+    
+    let mut node0 = 0;
+    let mut node1 = 0;
+    for &s in status.iter() {
+        if s == 0 { node0 += 1; }
+        else if s == 1 { node1 += 1; }
+    }
+    
+    let n0_pct = (node0 as f64 / actual_samples as f64) * 100.0;
+    let n1_pct = (node1 as f64 / actual_samples as f64) * 100.0;
+    (n0_pct, n1_pct)
+}
+
 fn main() {
     let args = Args::parse();
     let deactivate_autonuma = args.deactivate_autonuma;
@@ -127,6 +169,12 @@ fn main() {
                 for step in 1..=20 {
                     println!("\n--- PING PONG ITERATION {} ---", step);
                     
+                    #[cfg(target_os = "linux")]
+                    {
+                        let (n0, n1) = check_numa_distribution(ball.as_ptr(), ball.len());
+                        println!("[Node 0] RAM Distribution: {:.1}% Node 0 | {:.1}% Node 1", n0, n1);
+                    }
+                    
                     let start = Instant::now();
                     for chunk in ball.chunks_exact_mut(4096) {
                         chunk[0] = chunk[0].wrapping_add(1);
@@ -161,6 +209,12 @@ fn main() {
                 for _step in 1..=20 {
                     // Receive the ball
                     let mut ball = rx_01.recv().unwrap();
+
+                    #[cfg(target_os = "linux")]
+                    {
+                        let (n0, n1) = check_numa_distribution(ball.as_ptr(), ball.len());
+                        println!("[Node 1] RAM Distribution: {:.1}% Node 0 | {:.1}% Node 1", n0, n1);
+                    }
 
                     let start = Instant::now();
                     for chunk in ball.chunks_exact_mut(4096) {
