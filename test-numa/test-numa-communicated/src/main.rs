@@ -4,7 +4,10 @@ use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Args {}
+struct Args {
+    #[arg(long, default_value_t = false)]
+    deactivate_autonuma: bool,
+}
 
 #[cfg(target_os = "linux")]
 fn parse_cpulist(s: &str) -> Vec<usize> {
@@ -27,7 +30,8 @@ fn parse_cpulist(s: &str) -> Vec<usize> {
 }
 
 fn main() {
-    let _args = Args::parse();
+    let args = Args::parse();
+    let deactivate_autonuma = args.deactivate_autonuma;
     
     let mut cpus_node0: Option<Vec<usize>> = None;
     let mut cpus_node1: Option<Vec<usize>> = None;
@@ -91,6 +95,29 @@ fn main() {
                 let mut ball = vec![0u8; ball_size];
                 for i in (0..ball_size).step_by(4096) {
                     ball[i] = 0;
+                }
+
+                #[cfg(target_os = "linux")]
+                if deactivate_autonuma {
+                    unsafe {
+                        println!("[Node 0] Applying mbind to pin the 10GB Ball to Node 0...");
+                        let mut nodemask: libc::c_ulong = 1 << 0;
+                        let ptr = ball.as_ptr() as usize;
+                        let aligned_ptr = ptr & !(4096 - 1);
+                        let offset = ptr - aligned_ptr;
+                        let size = ball.len() + offset;
+
+                        libc::syscall(
+                            libc::SYS_mbind,
+                            aligned_ptr as *mut libc::c_void,
+                            size,
+                            2, // MPOL_BIND
+                            &mut nodemask,
+                            64,
+                            2, // MPOL_MF_MOVE
+                        );
+                        println!("[Node 0] 10GB Ball physically pinned to Node 0.");
+                    }
                 }
 
                 let mut step = 1;
