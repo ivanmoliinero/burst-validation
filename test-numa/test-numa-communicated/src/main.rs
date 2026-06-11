@@ -122,33 +122,24 @@ fn main() {
                     }
                 }
 
-                let mut step = 1;
-                loop {
+                for step in 1..=20 {
                     println!("\n--- PING PONG ITERATION {} ---", step);
-
+                    
                     let start = Instant::now();
                     for i in (0..ball_size).step_by(4096) {
                         ball[i] = ball[i].wrapping_add(1);
                     }
                     let elapsed = start.elapsed();
-                    println!(
-                        "[Node 0] Local Write (10GB) took: {:.2} ms",
-                        elapsed.as_secs_f64() * 1000.0
-                    );
+                    println!("[Node 0] Local Write (10GB) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
 
                     // Send the ball
                     tx_01.send(ball).unwrap();
 
                     // Receive the ball back
                     ball = rx_10.recv().unwrap();
-
-                    // Active polling: avoid core deallocation.
-                    let wait_until = Instant::now() + Duration::from_secs(1);
-                    while Instant::now() < wait_until {
-                        std::hint::spin_loop();
-                    }
-                    step += 1;
                 }
+
+                std::thread::sleep(Duration::from_secs(3600)); // Hold memory
             });
         });
 
@@ -165,8 +156,7 @@ fn main() {
                 }
                 println!("[Node 1] 20GB static padding isolated.");
 
-                let mut step = 1;
-                loop {
+                for _step in 1..=20 {
                     // Receive the ball
                     let mut ball = rx_01.recv().unwrap();
 
@@ -175,15 +165,13 @@ fn main() {
                         ball[i] = ball[i].wrapping_add(1);
                     }
                     let elapsed = start.elapsed();
-                    println!(
-                        "[Node 1] Remote Write (10GB NUMA MISS) took: {:.2} ms",
-                        elapsed.as_secs_f64() * 1000.0
-                    );
+                    println!("[Node 1] Remote Write (10GB NUMA MISS) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
 
                     // Send the ball back
                     tx_10.send(ball).unwrap();
-                    step += 1;
                 }
+
+                std::thread::sleep(Duration::from_secs(3600)); // Hold memory
             });
         });
     });
