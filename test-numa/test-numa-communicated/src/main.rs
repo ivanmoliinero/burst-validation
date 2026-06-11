@@ -59,7 +59,9 @@ fn main() {
             builder = builder.start_handler(move |thread_idx| unsafe {
                 let mut set: libc::cpu_set_t = std::mem::zeroed();
                 if let Some(ref cpus) = target_cpus {
-                    libc::CPU_SET(cpus[0], &mut set);
+                    for &cpu in cpus {
+                        libc::CPU_SET(cpu, &mut set);
+                    }
                     libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
                 }
 
@@ -126,8 +128,8 @@ fn main() {
                     println!("\n--- PING PONG ITERATION {} ---", step);
                     
                     let start = Instant::now();
-                    for i in (0..ball_size).step_by(4096) {
-                        ball[i] = ball[i].wrapping_add(1);
+                    for chunk in ball.chunks_exact_mut(4096) {
+                        chunk[0] = chunk[0].wrapping_add(1);
                     }
                     let elapsed = start.elapsed();
                     println!("[Node 0] Local Write (10GB) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
@@ -161,8 +163,8 @@ fn main() {
                     let mut ball = rx_01.recv().unwrap();
 
                     let start = Instant::now();
-                    for i in (0..ball.len()).step_by(4096) {
-                        ball[i] = ball[i].wrapping_add(1);
+                    for chunk in ball.chunks_exact_mut(4096) {
+                        chunk[0] = chunk[0].wrapping_add(1);
                     }
                     let elapsed = start.elapsed();
                     println!("[Node 1] Remote Write (10GB NUMA MISS) took: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
