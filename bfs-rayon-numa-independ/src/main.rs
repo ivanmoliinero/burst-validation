@@ -444,52 +444,53 @@ fn run_monolithic_mode(num_nodes: usize, _is_grid: bool, args: Args, start_load:
     let start_par = Instant::now();
     let mut local_distances_out = Vec::new();
 
-    // All channels and the thread scope are created ONCE, outside the trial loop.
-    // Previously, 4 channels x 64 trials = 256 channel allocations and 2 thread::scope
-    // creations per trial = 128 scope barriers were incurred. This eliminates all that overhead.
-    std::thread::scope(|s| {
-        let (tx_01, rx_01) = bounded::<Vec<usize>>(1);
-        let (tx_10, rx_10) = bounded::<Vec<usize>>(1);
-        let (tx_sync_01, rx_sync_01) = bounded::<usize>(1);
-        let (tx_sync_10, rx_sync_10) = bounded::<usize>(1);
-        let (tx_ts, rx_ts) = bounded::<Vec<Timestamp>>(1);
-        let (tx_dist, rx_dist) = bounded::<Vec<(usize, usize)>>(1);
+    let (tx_ts, rx_ts) = bounded::<Vec<Timestamp>>(1);
 
-        // References to shared data (graph, distances, sources) captured by both threads
-        let graph_ref = &graph;
-        let distances_ref = &distances;
-        let sources_ref = &sources;
+    for (trial, &source) in sources.iter().enumerate() {
+        timestamps_global.push(timestamp(format!("trial_{}_start", trial)));
 
-        // --- DELEGADO NODO 0 ---
-        s.spawn(move || {
-            let graph = graph_ref;
-            let distances = distances_ref;
-            let sources = sources_ref;
-            numa::bind_thread_to_node(0);
-            let sent_bitvec: Vec<AtomicU64> = (0..((num_nodes / 64) + 1))
-                .map(|_| AtomicU64::new(0))
-                .collect();
-            let mut local_ts = Vec::new();
-            let mut dist_out = Vec::new();
-
-            for (trial, &source) in sources.iter().enumerate() {
-                local_ts.push(timestamp(format!("trial_{}_start", trial)));
-
-                // Reset our half in parallel. Signal Node 1 to start its reset concurrently,
-                // then wait for Node 1 to confirm its half is also done before writing distances[source].
+        std::thread::scope(|s| {
+            s.spawn(|| {
                 pool0.install(|| {
                     distances[0..split_point].par_iter().for_each(|d| {
                         d.store(usize::MAX, Ordering::Relaxed);
                     });
                 });
-                tx_sync_01.send(0).unwrap();     // tell Node 1: our half reset done
-                rx_sync_10.recv().unwrap();       // wait for Node 1: its half reset done
+            });
+            s.spawn(|| {
+                pool1.install(|| {
+                    distances[split_point..num_nodes].par_iter().for_each(|d| {
+                        d.store(usize::MAX, Ordering::Relaxed);
+                    });
+                });
+            });
+        });
 
-                distances[source].store(0, Ordering::Relaxed);
+        distances[source].store(0, Ordering::Relaxed);
 
-                let mut current_frontier = if source < split_point { vec![source] } else { vec![] };
+        let (tx_01, rx_01) = bounded::<Vec<usize>>(1);
+        let (tx_10, rx_10) = bounded::<Vec<usize>>(1);
+        
+        let (tx_sync_01, rx_sync_01) = bounded::<usize>(1);
+        let (tx_sync_10, rx_sync_10) = bounded::<usize>(1);
+
+        let mut initial_frontier_0 = Vec::new();
+        let mut initial_frontier_1 = Vec::new();
+        if source < split_point {
+            initial_frontier_0.push(source);
+        } else {
+            initial_frontier_1.push(source);
+        }
+
+        std::thread::scope(|s| {
+            // --- DELEGADO NODO 0 ---
+            s.spawn(|| {
+                numa::bind_thread_to_node(0);
+                let mut local_ts = Vec::new();
+                let mut current_frontier = initial_frontier_0;
                 let mut current_level = 0;
                 let mut iter_start = SystemTime::now();
+                let sent_bitvec: Vec<AtomicU64> = (0..((num_nodes / 64) + 1)).map(|_| AtomicU64::new(0)).collect();
 
                 loop {
                     local_ts.push(timestamp(format!("trial_{}_iter_{}_compute", trial, current_level)));
@@ -497,7 +498,7 @@ fn run_monolithic_mode(num_nodes: usize, _is_grid: bool, args: Args, start_load:
                     pool0.install(|| {
                         sent_bitvec.par_iter().for_each(|x| x.store(0, Ordering::Relaxed));
                     });
-
+                    
                     let (mut next_local, export_to_node1) = pool0.install(|| {
                         current_frontier.par_iter().fold(
                             || (Vec::new(), Vec::new()),
@@ -560,51 +561,22 @@ fn run_monolithic_mode(num_nodes: usize, _is_grid: bool, args: Args, start_load:
                     current_level += 1;
                     iter_start = SystemTime::now();
                 }
+                tx_ts.send(local_ts).unwrap();
+            });
 
-                local_ts.push(timestamp(format!("trial_{}_end", trial)));
-
-                if trial == 0 {
-                    for (node, d) in distances.iter().enumerate() {
-                        let dist = d.load(Ordering::Relaxed);
-                        if dist != usize::MAX {
-                            dist_out.push((node, dist));
-                        }
-                    }
-                }
-            }
-            tx_ts.send(local_ts).unwrap();
-            tx_dist.send(dist_out).unwrap();
-        });
-
-        // --- DELEGADO NODO 1 ---
-        s.spawn(move || {
-            let graph = graph_ref;
-            let distances = distances_ref;
-            let sources = sources_ref;
-            numa::bind_thread_to_node(1);
-            let sent_bitvec: Vec<AtomicU64> = (0..((num_nodes / 64) + 1))
-                .map(|_| AtomicU64::new(0))
-                .collect();
-
-            for (trial, &source) in sources.iter().enumerate() {
-                // Reset our half concurrently with Node 0, then sync.
-                pool1.install(|| {
-                    distances[split_point..num_nodes].par_iter().for_each(|d| {
-                        d.store(usize::MAX, Ordering::Relaxed);
-                    });
-                });
-                rx_sync_01.recv().unwrap();      // wait for Node 0: its half reset done
-                tx_sync_10.send(0).unwrap();     // tell Node 0: our half reset done
-
-                let mut current_frontier = if source >= split_point { vec![source] } else { vec![] };
+            // --- DELEGADO NODO 1 ---
+            s.spawn(|| {
+                numa::bind_thread_to_node(1);
+                let mut current_frontier = initial_frontier_1;
                 let mut current_level = 0;
                 let mut iter_start = SystemTime::now();
+                let sent_bitvec: Vec<AtomicU64> = (0..((num_nodes / 64) + 1)).map(|_| AtomicU64::new(0)).collect();
 
                 loop {
                     pool1.install(|| {
                         sent_bitvec.par_iter().for_each(|x| x.store(0, Ordering::Relaxed));
                     });
-
+                    
                     let (mut next_local, export_to_node0) = pool1.install(|| {
                         current_frontier.par_iter().fold(
                             || (Vec::new(), Vec::new()),
@@ -663,12 +635,21 @@ fn run_monolithic_mode(num_nodes: usize, _is_grid: bool, args: Args, start_load:
                     current_level += 1;
                     iter_start = SystemTime::now();
                 }
-            }
+            });
         });
 
         timestamps_global.extend(rx_ts.recv().unwrap());
-        local_distances_out.extend(rx_dist.recv().unwrap());
-    });
+        timestamps_global.push(timestamp(format!("trial_{}_end", trial)));
+
+        if trial == 0 {
+            for (node, d) in distances.iter().enumerate() {
+                let dist = d.load(Ordering::Relaxed);
+                if dist != usize::MAX {
+                    local_distances_out.push((node, dist));
+                }
+            }
+        }
+    }
 
     timestamps_global.push(timestamp("worker_end".to_string()));
 
